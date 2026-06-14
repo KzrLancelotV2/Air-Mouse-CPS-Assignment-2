@@ -18,16 +18,24 @@ import kotlin.math.max
 
 object CalibrationStore {
     var gyroBias: FloatArray? = null
+
     val accelSixPositions = mutableListOf<FloatArray>()
+    var accelOffset: FloatArray? = null
+    var accelScale: FloatArray? = null
 
     var magMin = FloatArray(3) { Float.POSITIVE_INFINITY }
     var magMax = FloatArray(3) { Float.NEGATIVE_INFINITY }
+    var magOffset: FloatArray? = null
+    var magScale: FloatArray? = null
 
     fun resetMagnetometer() {
         magMin = FloatArray(3) { Float.POSITIVE_INFINITY }
         magMax = FloatArray(3) { Float.NEGATIVE_INFINITY }
+        magOffset = null
+        magScale = null
     }
 }
+
 
 class SecondFragment : Fragment(), SensorEventListener {
 
@@ -101,6 +109,50 @@ class SecondFragment : Fragment(), SensorEventListener {
                     "Step 2: Place the phone in 6 different physical orientations and press the accelerometer button once in each position.\n\n" +
                     "Step 3: Press the magnetometer button, move the phone in a figure-8 shape, then press the button again to stop."
     }
+    private fun computeAccelerometerCalibrationIfReady() {
+        val positions = CalibrationStore.accelSixPositions
+
+        if (positions.size < 6) return
+
+        val g = SensorManager.GRAVITY_EARTH
+
+        val xPlus = positions[0][0]
+        val xMinus = positions[1][0]
+
+        val yPlus = positions[2][1]
+        val yMinus = positions[3][1]
+
+        val zPlus = positions[4][2]
+        val zMinus = positions[5][2]
+
+        val offsetX = (xPlus + xMinus) / 2f
+        val offsetY = (yPlus + yMinus) / 2f
+        val offsetZ = (zPlus + zMinus) / 2f
+
+        val scaleX = g / ((xPlus - xMinus) / 2f)
+        val scaleY = g / ((yPlus - yMinus) / 2f)
+        val scaleZ = g / ((zPlus - zMinus) / 2f)
+
+        CalibrationStore.accelOffset = floatArrayOf(offsetX, offsetY, offsetZ)
+        CalibrationStore.accelScale = floatArrayOf(scaleX, scaleY, scaleZ)
+
+        binding.accelResultText.text =
+            String.format(
+                Locale.US,
+                "Accelerometer calibration completed:\n" +
+                        "Offset X %.3f  Y %.3f  Z %.3f\n" +
+                        "Scale X %.3f  Y %.3f  Z %.3f",
+                offsetX,
+                offsetY,
+                offsetZ,
+                scaleX,
+                scaleY,
+                scaleZ
+            )
+
+        binding.calibrationStatusText.text =
+            "Status: accelerometer calibration completed."
+    }
 
     private fun startSensors() {
         accelerometer?.also {
@@ -159,11 +211,43 @@ class SecondFragment : Fragment(), SensorEventListener {
         } else {
             binding.accelCaptureButton.text =
                 "2. Accelerometer 6 Positions Completed"
+
+            computeAccelerometerCalibrationIfReady()
         }
 
         binding.calibrationStatusText.text =
             "Status: saved accelerometer position $count."
     }
+    private fun computeMagnetometerCalibration() {
+        val minValues = CalibrationStore.magMin
+        val maxValues = CalibrationStore.magMax
+
+        val offsetX = (maxValues[0] + minValues[0]) / 2f
+        val offsetY = (maxValues[1] + minValues[1]) / 2f
+        val offsetZ = (maxValues[2] + minValues[2]) / 2f
+
+        val scaleX = (maxValues[0] - minValues[0]) / 2f
+        val scaleY = (maxValues[1] - minValues[1]) / 2f
+        val scaleZ = (maxValues[2] - minValues[2]) / 2f
+
+        CalibrationStore.magOffset = floatArrayOf(offsetX, offsetY, offsetZ)
+        CalibrationStore.magScale = floatArrayOf(scaleX, scaleY, scaleZ)
+
+        binding.magResultText.text =
+            String.format(
+                Locale.US,
+                "Mag calibration completed:\n" +
+                        "Offset X %.2f Y %.2f Z %.2f\n" +
+                        "Scale X %.2f Y %.2f Z %.2f",
+                offsetX,
+                offsetY,
+                offsetZ,
+                scaleX,
+                scaleY,
+                scaleZ
+            )
+    }
+
 
     private fun toggleMagnetometerCollection() {
         if (!collectingMag) {
@@ -184,7 +268,7 @@ class SecondFragment : Fragment(), SensorEventListener {
             binding.calibrationStatusText.text =
                 "Status: magnetometer capture stopped."
 
-            updateMagnetometerText()
+            computeMagnetometerCalibration()
         }
     }
 

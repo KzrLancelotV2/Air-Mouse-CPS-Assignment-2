@@ -153,6 +153,19 @@ class FirstFragment : Fragment(), SensorEventListener {
             findNavController().navigate(R.id.action_FirstFragment_to_SecondFragment)
         }
     }
+    private fun applyGyroCalibration(x: Float, y: Float, z: Float): FloatArray {
+        val bias = CalibrationStore.gyroBias
+
+        return if (bias != null) {
+            floatArrayOf(
+                x - bias[0],
+                y - bias[1],
+                z - bias[2]
+            )
+        } else {
+            floatArrayOf(x, y, z)
+        }
+    }
 
     private fun updateSensorAvailabilityText() {
         val accelStatus = accelerometer?.name ?: "Missing"
@@ -182,6 +195,20 @@ class FirstFragment : Fragment(), SensorEventListener {
 
         isReadingSensors = true
     }
+    private fun applyAccelerometerCalibration(x: Float, y: Float, z: Float): FloatArray {
+        val offset = CalibrationStore.accelOffset
+        val scale = CalibrationStore.accelScale
+
+        return if (offset != null && scale != null) {
+            floatArrayOf(
+                (x - offset[0]) * scale[0],
+                (y - offset[1]) * scale[1],
+                (z - offset[2]) * scale[2]
+            )
+        } else {
+            floatArrayOf(x, y, z)
+        }
+    }
 
     private fun stopReadingSensors() {
         if (!isReadingSensors) return
@@ -205,36 +232,87 @@ class FirstFragment : Fragment(), SensorEventListener {
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER,
             Sensor.TYPE_ACCELEROMETER_UNCALIBRATED -> {
-                latestAccel[0] = x
-                latestAccel[1] = y
-                latestAccel[2] = z
+                val corrected = applyAccelerometerCalibration(x, y, z)
 
-                currentBinding.accelText.text = valuesText
+                latestAccel[0] = corrected[0]
+                latestAccel[1] = corrected[1]
+                latestAccel[2] = corrected[2]
 
-                detectScrollFromYAxis(accelX = x, accelY = y, accelZ = z)
+                currentBinding.accelText.text = formatSensorValues(
+                    corrected[0],
+                    corrected[1],
+                    corrected[2]
+                )
+
+                detectScrollFromYAxis(
+                    accelX = corrected[0],
+                    accelY = corrected[1],
+                    accelZ = corrected[2]
+                )
             }
+
 
             Sensor.TYPE_GYROSCOPE,
             Sensor.TYPE_GYROSCOPE_UNCALIBRATED -> {
-                latestGyro[0] = x
-                latestGyro[1] = y
-                latestGyro[2] = z
+                val corrected = applyGyroCalibration(x, y, z)
 
-                currentBinding.gyroText.text = valuesText
+                latestGyro[0] = corrected[0]
+                latestGyro[1] = corrected[1]
+                latestGyro[2] = corrected[2]
 
-                updateMovementIndicatorFromXZ(xAxis = x, zAxis = z)
-                createMovementPacketFromXZ(xAxis = x, zAxis = z)
-                detectClickFromYAxis(gyroX = x, gyroY = y, gyroZ = z)
+                currentBinding.gyroText.text = formatSensorValues(
+                    corrected[0],
+                    corrected[1],
+                    corrected[2]
+                )
+
+                updateMovementIndicatorFromXZ(
+                    xAxis = corrected[0],
+                    zAxis = corrected[2]
+                )
+
+                createMovementPacketFromXZ(
+                    xAxis = corrected[0],
+                    zAxis = corrected[2]
+                )
+
+                detectClickFromYAxis(
+                    gyroX = corrected[0],
+                    gyroY = corrected[1],
+                    gyroZ = corrected[2]
+                )
             }
+
 
             Sensor.TYPE_MAGNETIC_FIELD,
             Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED -> {
-                latestMag[0] = x
-                latestMag[1] = y
-                latestMag[2] = z
+                val corrected = applyMagnetometerCalibration(x, y, z)
 
-                currentBinding.magText.text = valuesText
+                latestMag[0] = corrected[0]
+                latestMag[1] = corrected[1]
+                latestMag[2] = corrected[2]
+
+                currentBinding.magText.text = formatSensorValues(
+                    corrected[0],
+                    corrected[1],
+                    corrected[2]
+                )
             }
+
+        }
+    }
+    private fun applyMagnetometerCalibration(x: Float, y: Float, z: Float): FloatArray {
+        val offset = CalibrationStore.magOffset
+        val scale = CalibrationStore.magScale
+
+        return if (offset != null && scale != null) {
+            floatArrayOf(
+                if (scale[0] != 0f) (x - offset[0]) / scale[0] else x,
+                if (scale[1] != 0f) (y - offset[1]) / scale[1] else y,
+                if (scale[2] != 0f) (z - offset[2]) / scale[2] else z
+            )
+        } else {
+            floatArrayOf(x, y, z)
         }
     }
 
