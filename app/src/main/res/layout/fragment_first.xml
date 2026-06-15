@@ -59,7 +59,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="24dp"
-            android:text="Movement Debug"
+            android:text="Movement Debug Preview"
             android:textStyle="bold" />
 
         <FrameLayout
@@ -83,7 +83,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="Movement: waiting"
+            android:text="This square is only a phone-side preview. Real cursor movement happens on the laptop through UDP."
             android:textSize="13sp" />
 
         <TextView
