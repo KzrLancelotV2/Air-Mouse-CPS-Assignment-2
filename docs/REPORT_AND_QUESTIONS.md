@@ -1,7 +1,5 @@
 # AirMouse Final Report and Assignment Questions
 
-This document is the detailed Markdown report for the AirMouse homework. The README remains a short quick-start file; this file preserves the implementation details and answers the assignment questions Q1-Q11 in English, in the same order and meaning as the Persian prompt.
-
 ## Implementation Summary
 
 The project turns an Android phone into an air mouse. The Android app reads phone motion sensors, applies calibration and filtering, detects movement/click/scroll gestures, sends UDP JSON packets to a laptop, and the laptop Python server moves the real mouse with PyAutoGUI.

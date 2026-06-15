@@ -1,6 +1,3 @@
-#!/usr/bin/env python3
-"""UDP receiver for the Android AirMouse homework app."""
-
 import argparse
 import json
 import socket
