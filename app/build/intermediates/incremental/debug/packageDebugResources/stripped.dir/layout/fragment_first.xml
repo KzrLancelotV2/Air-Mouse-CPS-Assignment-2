@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="AirMouse"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Status: idle"
+            android:textSize="14sp" />
+
+        <EditText
+            android:id="@+id/ipAddressEditText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:hint="Laptop IP Address"
+            android:inputType="phone" />
+
+        <Button
+            android:id="@+id/calibrateButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="CALIBRATE" />
+
+        <Button
+            android:id="@+id/startButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="START MOUSE" />
+
+        <TextView
+            android:id="@+id/sensorAvailabilityText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Sensor availability: not checked yet"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Movement Debug Preview"
+            android:textStyle="bold" />
+
+        <FrameLayout
+            android:id="@+id/movementArea"
+            android:layout_width="match_parent"
+            android:layout_height="160dp"
+            android:layout_marginTop="8dp"
+            android:background="#EEEEEE">
+
+            <View
+                android:id="@+id/movementSquare"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_gravity="center"
+                android:background="#4CAF50" />
+
+        </FrameLayout>
+
+        <TextView
+            android:id="@+id/movementLabelText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="This square is only a phone-side preview. Real cursor movement happens on the laptop through UDP."
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/clickStatusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Click: not detected"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/scrollStatusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Scroll: not detected"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="Accelerometer"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/accelText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="X: 0.0  Y: 0.0  Z: 0.0" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Gyroscope"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/gyroText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="X: 0.0  Y: 0.0  Z: 0.0" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Magnetometer"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/magText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="X: 0.0  Y: 0.0  Z: 0.0" />
+
+        <TextView
+            android:id="@+id/sampleCountText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Stored samples: 0"
+            android:textSize="13sp" />
+
+    </LinearLayout>
+
+</ScrollView>
