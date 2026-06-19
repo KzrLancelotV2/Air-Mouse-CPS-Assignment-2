@@ -56,6 +56,15 @@ class MotionProcessor(
     private var lastScrollAccelNanos = 0L
     private var scrollPeakSignedY = 0f
     private var scrollImpulseSignedY = 0f
+    private var activeGestureSettle = ActiveGestureSettle.NONE
+    private var gestureSettleMaxUntilNanos = 0L
+    private var gestureStableSinceNanos = 0L
+    private var baselineGyroNorm = 0f
+    private var baselineAccelNorm = 0f
+    private var baselineInitialized = false
+    private var settleReferenceGyroNorm = 0f
+    private var settleReferenceAccelNorm = 0f
+    private var lastSettleDebug = "Settle: idle"
     private var previousEuler: Vec3? = null
     private var scrollArmed = true
 
@@ -87,6 +96,15 @@ class MotionProcessor(
         lastScrollAccelNanos = 0L
         scrollPeakSignedY = 0f
         scrollImpulseSignedY = 0f
+        activeGestureSettle = ActiveGestureSettle.NONE
+        gestureSettleMaxUntilNanos = 0L
+        gestureStableSinceNanos = 0L
+        baselineGyroNorm = 0f
+        baselineAccelNorm = 0f
+        baselineInitialized = false
+        settleReferenceGyroNorm = 0f
+        settleReferenceAccelNorm = 0f
+        lastSettleDebug = "Settle: reset"
         previousEuler = null
         scrollArmed = true
         lastMovementDebug = "Movement: reset"
@@ -278,7 +296,128 @@ class MotionProcessor(
         return sign * (curvedNearZero + fastPortion)
     }
 
+    private fun updateIdleBaseline() {
+        val gyroNorm = correctedGyro.norm()
+        val accelNorm = linearAccel.norm()
+        if (!baselineInitialized) {
+            baselineGyroNorm = gyroNorm
+            baselineAccelNorm = accelNorm
+            baselineInitialized = true
+            return
+        }
+        baselineGyroNorm = baselineGyroNorm * (1f - SETTLE_BASELINE_ALPHA) + gyroNorm * SETTLE_BASELINE_ALPHA
+        baselineAccelNorm = baselineAccelNorm * (1f - SETTLE_BASELINE_ALPHA) + accelNorm * SETTLE_BASELINE_ALPHA
+    }
+
+    private fun startGestureSettle(
+        kind: ActiveGestureSettle,
+        nowNanos: Long,
+        minFreezeNanos: Long,
+        maxSettleNanos: Long
+    ) {
+        if (!baselineInitialized) {
+            baselineGyroNorm = 0f
+            baselineAccelNorm = 0f
+            baselineInitialized = true
+        }
+        activeGestureSettle = kind
+        gestureSettleMaxUntilNanos = nowNanos + maxSettleNanos
+        gestureStableSinceNanos = 0L
+        settleReferenceGyroNorm = baselineGyroNorm
+        settleReferenceAccelNorm = baselineAccelNorm
+        when (kind) {
+            ActiveGestureSettle.CLICK -> clickFreezeUntilNanos = nowNanos + minFreezeNanos
+            ActiveGestureSettle.SCROLL -> scrollFreezeUntilNanos = nowNanos + minFreezeNanos
+            ActiveGestureSettle.NONE -> Unit
+        }
+    }
+
+    private fun activeSettleState(nowNanos: Long): GestureState? {
+        val kind = activeGestureSettle
+        if (kind == ActiveGestureSettle.NONE) return null
+
+        val minUntilNanos = when (kind) {
+            ActiveGestureSettle.CLICK -> clickFreezeUntilNanos
+            ActiveGestureSettle.SCROLL -> scrollFreezeUntilNanos
+            ActiveGestureSettle.NONE -> 0L
+        }
+        val minRemainingMs = remainingMs(minUntilNanos, nowNanos)
+        val maxRemainingMs = remainingMs(gestureSettleMaxUntilNanos, nowNanos)
+        val gyroNorm = correctedGyro.norm()
+        val accelNorm = linearAccel.norm()
+        val gyroLimit = max(settleReferenceGyroNorm + SETTLE_GYRO_MARGIN, SETTLE_GYRO_ABSOLUTE_LIMIT)
+        val accelLimit = max(settleReferenceAccelNorm + SETTLE_ACCEL_MARGIN, SETTLE_ACCEL_ABSOLUTE_LIMIT)
+        val stableNow = gyroNorm <= gyroLimit && accelNorm <= accelLimit
+
+        if (stableNow) {
+            if (gestureStableSinceNanos <= 0L) gestureStableSinceNanos = nowNanos
+        } else {
+            gestureStableSinceNanos = 0L
+        }
+
+        val stableDurationNanos = if (gestureStableSinceNanos <= 0L) {
+            0L
+        } else {
+            nowNanos - gestureStableSinceNanos
+        }
+        val stableEnough = stableDurationNanos >= SETTLE_STABLE_NANOS
+        val minFreezeDone = minRemainingMs <= 0f
+        val maxWaitExpired = maxRemainingMs <= 0f
+
+        lastSettleDebug = String.format(
+            Locale.US,
+            "Settle kind=%s active=%s minRemainingMs %.0f maxRemainingMs %.0f stable=%s stableForMs %.0f gyroNorm %.3f limit %.3f accelNorm %.3f limit %.3f baseline %.3f/%.3f",
+            kind.name,
+            !minFreezeDone || (!stableEnough && !maxWaitExpired),
+            minRemainingMs,
+            maxRemainingMs,
+            stableNow,
+            stableDurationNanos / 1_000_000f,
+            gyroNorm,
+            gyroLimit,
+            accelNorm,
+            accelLimit,
+            settleReferenceGyroNorm,
+            settleReferenceAccelNorm
+        )
+
+        if (!minFreezeDone || (!stableEnough && !maxWaitExpired)) {
+            val mode = when (kind) {
+                ActiveGestureSettle.CLICK -> if (!minFreezeDone) "clickFreeze" else "clickSettle"
+                ActiveGestureSettle.SCROLL -> if (!minFreezeDone) "scrollFreeze" else "scrollSettle"
+                ActiveGestureSettle.NONE -> "cursor"
+            }
+            val reason = when (kind) {
+                ActiveGestureSettle.CLICK -> if (!minFreezeDone) "click freeze" else "click sensor settle"
+                ActiveGestureSettle.SCROLL -> if (!minFreezeDone) "scroll freeze" else "scroll sensor settle"
+                ActiveGestureSettle.NONE -> "none"
+            }
+            return GestureState(null, true, reason, mode)
+        }
+
+        activeGestureSettle = ActiveGestureSettle.NONE
+        gestureStableSinceNanos = 0L
+        updateIdleBaseline()
+        return GestureState(null, true, "${kind.name.lowercase(Locale.US)} settle release", "${kind.name.lowercase(Locale.US)}SettleRelease")
+    }
+
     private fun detectGestureState(nowNanos: Long): GestureState {
+        activeSettleState(nowNanos)?.let { settleState ->
+            val clickSignValue = correctedGyro.y * CLICK_SIGN
+            lastGestureDebug = gestureDebug(
+                mode = settleState.mode,
+                clickSignValue = clickSignValue,
+                clickCandidate = false,
+                clickAllowed = false,
+                scrollCandidate = false,
+                scrollAllowed = false,
+                scrollBlockedReason = settleState.suppressionReason,
+                clickFreezeRemainingMs = remainingMs(clickFreezeUntilNanos, nowNanos),
+                scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
+            )
+            return settleState
+        }
+
         val gyro = correctedGyro
         val accel = linearAccel
         val yGyroDominant = abs(gyro.y) > abs(gyro.x) * AXIS_DOMINANCE_RATIO &&
@@ -306,7 +445,12 @@ class MotionProcessor(
 
         if (clickAllowed && yGyroDominant && clickSignValue > CLICK_THRESHOLD_RAD_PER_SEC) {
             lastClickNanos = nowNanos
-            clickFreezeUntilNanos = nowNanos + CLICK_FREEZE_NANOS
+            startGestureSettle(
+                ActiveGestureSettle.CLICK,
+                nowNanos,
+                CLICK_FREEZE_NANOS,
+                CLICK_MAX_SETTLE_NANOS
+            )
             lastGestureDebug = gestureDebug(
                 mode = "clickFreeze",
                 clickSignValue = clickSignValue,
@@ -347,20 +491,20 @@ class MotionProcessor(
         val scrollImpulseMagnitude = abs(scrollImpulseSignedY)
         val scrollCandidate = scrollArmed &&
                 yAccelDominant &&
-                (scrollMagnitude > SCROLL_CANDIDATE_ACCEL_THRESHOLD ||
-                        scrollPeakMagnitude > SCROLL_CANDIDATE_ACCEL_THRESHOLD ||
-                        scrollImpulseMagnitude > SCROLL_CANDIDATE_IMPULSE_THRESHOLD)
+                (exceedsDirectionalThreshold(scrollSignal, SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD, SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD) ||
+                        exceedsDirectionalThreshold(scrollPeakSignedY, SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD, SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD) ||
+                        exceedsDirectionalThreshold(scrollImpulseSignedY, SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD, SCROLL_DOWN_CANDIDATE_IMPULSE_THRESHOLD))
         val scrollTrigger = scrollArmed &&
                 yAccelDominant &&
                 !heavyRotation &&
-                (scrollMagnitude > SCROLL_ACCEL_THRESHOLD ||
-                        scrollPeakMagnitude > SCROLL_PEAK_THRESHOLD ||
-                        scrollImpulseMagnitude > SCROLL_IMPULSE_THRESHOLD)
+                (exceedsDirectionalThreshold(scrollSignal, SCROLL_UP_ACCEL_THRESHOLD, SCROLL_DOWN_ACCEL_THRESHOLD) ||
+                        exceedsDirectionalThreshold(scrollPeakSignedY, SCROLL_UP_PEAK_THRESHOLD, SCROLL_DOWN_PEAK_THRESHOLD) ||
+                        exceedsDirectionalThreshold(scrollImpulseSignedY, SCROLL_UP_IMPULSE_THRESHOLD, SCROLL_DOWN_IMPULSE_THRESHOLD))
         val scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
 
         if (scrollMagnitude < SCROLL_REARM_ACCEL_THRESHOLD &&
-            scrollPeakMagnitude < SCROLL_CANDIDATE_ACCEL_THRESHOLD &&
-            scrollImpulseMagnitude < SCROLL_CANDIDATE_IMPULSE_THRESHOLD
+            scrollPeakMagnitude < SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD &&
+            scrollImpulseMagnitude < SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD
         ) {
             scrollArmed = true
         }
@@ -384,7 +528,12 @@ class MotionProcessor(
 
         if (scrollAllowed && scrollTrigger) {
             lastScrollNanos = nowNanos
-            scrollFreezeUntilNanos = nowNanos + SCROLL_FREEZE_NANOS
+            startGestureSettle(
+                ActiveGestureSettle.SCROLL,
+                nowNanos,
+                SCROLL_FREEZE_NANOS,
+                SCROLL_MAX_SETTLE_NANOS
+            )
             scrollArmed = false
             val scrollDirectionSignal = strongestScrollSignal(scrollSignal)
             val gesture = if (scrollDirectionSignal > 0f) GestureKind.SCROLL_UP else GestureKind.SCROLL_DOWN
@@ -421,6 +570,7 @@ class MotionProcessor(
             return GestureState(null, true, "scroll candidate", "scrollCandidate")
         }
 
+        updateIdleBaseline()
         lastGestureDebug = gestureDebug(
             mode = "cursor",
             clickSignValue = clickSignValue,
@@ -441,6 +591,18 @@ class MotionProcessor(
         val peak = scrollPeakSignedY
         val impulse = scrollImpulseSignedY / SCROLL_IMPULSE_DIRECTION_NORMALIZER
         return listOf(currentSignal, peak, impulse).maxByOrNull { abs(it) } ?: currentSignal
+    }
+
+    private fun exceedsDirectionalThreshold(
+        signedValue: Float,
+        upThreshold: Float,
+        downThreshold: Float
+    ): Boolean {
+        return if (signedValue >= 0f) {
+            signedValue > upThreshold
+        } else {
+            abs(signedValue) > downThreshold
+        }
     }
 
     private fun scrollBlockedReason(
@@ -473,9 +635,9 @@ class MotionProcessor(
         return String.format(
             Locale.US,
             "Gesture mode=%s cursorFrozenForClick=%s clickCandidate=%s clickY raw %.3f signed %.3f threshold %.2f candidate %.2f allowed=%s clickFreezeRemainingMs %.0f\n" +
-                    "Scroll candidate=%s linearY raw %.3f signed %.3f peakY %.3f impulseY %.3f threshold %.2f peakThreshold %.2f impulseThreshold %.2f armed=%s allowed=%s dom=%s heavyRotation=%s scrollFreezeRemainingMs %.0f scrollBlockedReason=%s",
+                    "Scroll candidate=%s linearY raw %.3f signed %.3f peakY %.3f impulseY %.3f upThresholds %.2f/%.2f/%.2f downThresholds %.2f/%.2f/%.2f armed=%s allowed=%s dom=%s heavyRotation=%s scrollFreezeRemainingMs %.0f scrollBlockedReason=%s\n%s",
             mode,
-            mode == "clickFreeze" || mode == "clickCandidate",
+            mode.startsWith("click"),
             clickCandidate,
             correctedGyro.y,
             clickSignValue,
@@ -488,15 +650,19 @@ class MotionProcessor(
             linearAccel.y * SCROLL_SIGN,
             scrollPeakSignedY,
             scrollImpulseSignedY,
-            SCROLL_ACCEL_THRESHOLD,
-            SCROLL_PEAK_THRESHOLD,
-            SCROLL_IMPULSE_THRESHOLD,
+            SCROLL_UP_ACCEL_THRESHOLD,
+            SCROLL_UP_PEAK_THRESHOLD,
+            SCROLL_UP_IMPULSE_THRESHOLD,
+            SCROLL_DOWN_ACCEL_THRESHOLD,
+            SCROLL_DOWN_PEAK_THRESHOLD,
+            SCROLL_DOWN_IMPULSE_THRESHOLD,
             scrollArmed,
             scrollAllowed,
             yAccelDominant,
             heavyRotation,
             scrollFreezeRemainingMs,
-            scrollBlockedReason
+            scrollBlockedReason,
+            lastSettleDebug
         )
     }
 
@@ -597,6 +763,8 @@ class MotionProcessor(
         val mode: String
     )
 
+    private enum class ActiveGestureSettle { NONE, CLICK, SCROLL }
+
     companion object {
         private const val HORIZONTAL_SIGN = -1f
         private const val VERTICAL_SIGN = -1f
@@ -622,16 +790,29 @@ class MotionProcessor(
         private const val CLICK_THRESHOLD_RAD_PER_SEC = 2.25f
         private const val CLICK_CANDIDATE_THRESHOLD_RAD_PER_SEC = 1.25f
         private const val CLICK_FREEZE_NANOS = 180_000_000L
-        private const val SCROLL_ACCEL_THRESHOLD = 2.05f
-        private const val SCROLL_PEAK_THRESHOLD = 2.15f
-        private const val SCROLL_IMPULSE_THRESHOLD = 0.13f
-        private const val SCROLL_CANDIDATE_ACCEL_THRESHOLD = 1.15f
-        private const val SCROLL_CANDIDATE_IMPULSE_THRESHOLD = 0.07f
+        private const val CLICK_MAX_SETTLE_NANOS = 650_000_000L
+        private const val SCROLL_UP_ACCEL_THRESHOLD = 1.72f
+        private const val SCROLL_UP_PEAK_THRESHOLD = 1.82f
+        private const val SCROLL_UP_IMPULSE_THRESHOLD = 0.105f
+        private const val SCROLL_DOWN_ACCEL_THRESHOLD = 2.05f
+        private const val SCROLL_DOWN_PEAK_THRESHOLD = 2.15f
+        private const val SCROLL_DOWN_IMPULSE_THRESHOLD = 0.13f
+        private const val SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD = 0.85f
+        private const val SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD = 0.05f
+        private const val SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD = 1.15f
+        private const val SCROLL_DOWN_CANDIDATE_IMPULSE_THRESHOLD = 0.07f
         private const val SCROLL_REARM_ACCEL_THRESHOLD = 0.65f
         private const val SCROLL_WINDOW_NANOS = 140_000_000L
         private const val SCROLL_FREEZE_NANOS = 240_000_000L
+        private const val SCROLL_MAX_SETTLE_NANOS = 750_000_000L
         private const val SCROLL_HEAVY_ROTATION_SUPPRESSION_THRESHOLD = 3.2f
         private const val SCROLL_IMPULSE_DIRECTION_NORMALIZER = 0.08f
+        private const val SETTLE_BASELINE_ALPHA = 0.08f
+        private const val SETTLE_STABLE_NANOS = 55_000_000L
+        private const val SETTLE_GYRO_ABSOLUTE_LIMIT = 0.24f
+        private const val SETTLE_GYRO_MARGIN = 0.11f
+        private const val SETTLE_ACCEL_ABSOLUTE_LIMIT = 0.75f
+        private const val SETTLE_ACCEL_MARGIN = 0.35f
         private const val AXIS_DOMINANCE_RATIO = 1.8f
         private const val MOVEMENT_AXIS_DOMINANCE_RATIO = 2.2f
         private const val AXIS_LEAKAGE_MAX_DELTA = 2.2f
