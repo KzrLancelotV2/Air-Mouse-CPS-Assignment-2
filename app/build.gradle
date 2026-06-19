@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace 'com.example.airmouse'
+    namespace = 'com.example.airmouse'
     compileSdk {
         version = release(36)
     }
@@ -33,7 +33,7 @@ android {
         jvmTarget = '11'
     }
     buildFeatures {
-        viewBinding true
+        viewBinding = true
     }
 }
 
