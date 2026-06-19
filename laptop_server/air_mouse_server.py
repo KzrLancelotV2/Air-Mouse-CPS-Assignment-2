@@ -35,6 +35,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Same as --debug. Kept for compatibility.",
     )
+    parser.add_argument(
+        "--measure-timing",
+        action="store_true",
+        help="Print perf_counter_ns receive/action timestamps for end-to-end latency analysis.",
+    )
     return parser.parse_args()
 
 
@@ -80,21 +85,29 @@ def handle_packet(
     scroll_duration: float,
     dry_run: bool,
     gesture_dry_run: bool,
-) -> None:
+) -> tuple[int | None, int | None]:
     delta_x = as_float(packet, "deltaX") * move_scale
     delta_y = as_float(packet, "deltaY") * move_scale
     click = bool(packet.get("click", False))
     scroll = as_int(packet, "scroll")
+    action_start_ns = None
+
+    def mark_action_start() -> None:
+        nonlocal action_start_ns
+        if action_start_ns is None:
+            action_start_ns = time.perf_counter_ns()
 
     if dry_run:
-        return
+        return None, None
 
     if delta_x or delta_y:
+        mark_action_start()
         pyautogui.moveRel(delta_x, delta_y, duration=0)
     if click:
         if gesture_dry_run:
             print("gesture-dry-run: LEFT CLICK detected, not applying to PC", flush=True)
         else:
+            mark_action_start()
             pyautogui.click(button="left")
     if scroll:
         if gesture_dry_run:
@@ -105,7 +118,10 @@ def handle_packet(
                 flush=True,
             )
         else:
+            mark_action_start()
             apply_scroll(pyautogui, scroll * scroll_scale, scroll_steps, scroll_duration)
+    action_end_ns = time.perf_counter_ns() if action_start_ns is not None else None
+    return action_start_ns, action_end_ns
 
 
 def apply_scroll(pyautogui, total_amount: int, steps: int, duration: float) -> None:
@@ -178,6 +194,7 @@ def main() -> int:
                     args.scroll_duration,
                     args.dry_run,
                     gesture_debug,
+                    args.measure_timing,
                 )
         except KeyboardInterrupt:
             print("\nAirMouse UDP server stopped.", flush=True)
@@ -197,7 +214,9 @@ def process_datagram(
     scroll_duration: float,
     dry_run: bool,
     gesture_debug: bool,
+    measure_timing: bool,
 ) -> None:
+    receive_perf_counter_ns = time.perf_counter_ns()
     try:
         text = data.decode("utf-8")
         packet = json.loads(text)
@@ -213,6 +232,9 @@ def process_datagram(
     click = bool(packet.get("click", False))
     scroll = as_int(packet, "scroll")
     requires_ack = bool(packet.get("requiresAck", False))
+    sensor_timestamp_nanos = packet.get("sensorTimestampNanos")
+    created_elapsed_nanos = packet.get("createdElapsedRealtimeNanos")
+    sent_elapsed_nanos = packet.get("sentElapsedRealtimeNanos")
     print(
         f"packet seq={seq} dx={delta_x:.2f} dy={delta_y:.2f} "
         f"click={click} scroll={scroll} ack={requires_ack} from={address}",
@@ -225,7 +247,7 @@ def process_datagram(
         print(f"ack seq={seq} to={address}", flush=True)
 
     try:
-        handle_packet(
+        action_start_ns, action_end_ns = handle_packet(
             packet,
             pyautogui,
             move_scale,
@@ -237,6 +259,23 @@ def process_datagram(
         )
     except Exception as exc:
         print(f"Mouse action failed for seq={seq}: {exc}", flush=True)
+    else:
+        if measure_timing:
+            action_duration_us = (
+                None if action_start_ns is None or action_end_ns is None
+                else (action_end_ns - action_start_ns) / 1000.0
+            )
+            print(
+                "timing "
+                f"seq={seq} recvPerfNs={receive_perf_counter_ns} "
+                f"sensorTimestampNanos={sensor_timestamp_nanos} "
+                f"createdElapsedRealtimeNanos={created_elapsed_nanos} "
+                f"sentElapsedRealtimeNanos={sent_elapsed_nanos} "
+                f"beforeActionPerfNs={action_start_ns} "
+                f"afterActionPerfNs={action_end_ns} "
+                f"actionDurationUs={action_duration_us}",
+                flush=True,
+            )
 
 
 if __name__ == "__main__":

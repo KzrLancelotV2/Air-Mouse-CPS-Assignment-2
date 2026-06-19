@@ -1,6 +1,6 @@
 package com.example.airmouse.sensor
 
-import android.os.Trace
+import com.example.airmouse.TraceUtils
 import kotlin.math.sqrt
 
 class MadgwickAhrs(
@@ -15,12 +15,11 @@ class MadgwickAhrs(
     }
 
     fun updateIMU(gyro: Vec3, accel: Vec3, dt: Float): Quaternion {
-        Trace.beginSection("AirMouse_Madgwick")
-        return try {
+        return TraceUtils.section("AirMouse_Madgwick_Update") {
             val accelUnit = accel.normalizedOrNull()
             if (accelUnit == null) {
                 quaternion = quaternion.integrateGyro(gyro, dt)
-                return quaternion
+                return@section quaternion
             }
 
             var q = quaternion
@@ -59,16 +58,13 @@ class MadgwickAhrs(
             ).normalized()
             quaternion = if (q.isUsable()) q else Quaternion.IDENTITY
             quaternion
-        } finally {
-            Trace.endSection()
         }
     }
 
     fun updateMARG(gyro: Vec3, accel: Vec3, mag: Vec3, dt: Float): Quaternion {
-        Trace.beginSection("AirMouse_Madgwick")
-        return try {
-            val accelUnit = accel.normalizedOrNull() ?: return updateIMU(gyro, accel, dt)
-            val magUnit = mag.normalizedOrNull() ?: return updateIMU(gyro, accel, dt)
+        return TraceUtils.section("AirMouse_Madgwick_Update") {
+            val accelUnit = accel.normalizedOrNull() ?: return@section updateIMU(gyro, accel, dt)
+            val magUnit = mag.normalizedOrNull() ?: return@section updateIMU(gyro, accel, dt)
 
             var q0 = quaternion.w
             var q1 = quaternion.x
@@ -145,8 +141,6 @@ class MadgwickAhrs(
             val updated = Quaternion(q0, q1, q2, q3).normalized()
             quaternion = if (updated.isUsable()) updated else Quaternion.IDENTITY
             quaternion
-        } finally {
-            Trace.endSection()
         }
     }
 

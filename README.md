@@ -14,7 +14,7 @@ Android/Kotlin AirMouse homework project. The app reads phone motion sensors, ap
 - Relative movement packets from filtered gyro X/Z.
 - Android UDP sender with ACK handling for click/scroll packets.
 - Python laptop UDP receiver with PyAutoGUI and dry-run mode.
-- Perfetto trace markers for sensor copy, calibration, filter, motion processing, and UDP send sections.
+- Perfetto trace markers/counters for sensor copy, calibration, filter, motion processing, UI updates, UDP send/ACK/retry, packet timing, and sensor sample intervals.
 
 ## Android Run
 
@@ -91,6 +91,7 @@ Movement packets are non-critical and may be dropped. Click and scroll packets s
 
 - Current implementation details: `docs/IMPLEMENTATION_STATUS.md`
 - Full implementation report and Q1-Q11 answers: `docs/REPORT_AND_QUESTIONS.md`
+- Perfetto capture guide: `docs/PERFETTO_CAPTURE_GUIDE.md`
 - Laptop receiver instructions: `laptop_server/README.md`
 
 ## Remaining TODOs

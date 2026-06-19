@@ -1,13 +1,13 @@
 package com.example.airmouse.sensor
 
 import android.hardware.SensorManager
-import android.os.Trace
 import com.example.airmouse.CalibrationStore
+import com.example.airmouse.TraceUtils
 import kotlin.math.abs
 
 object SensorCalibration {
     fun correctGyro(raw: Vec3): Pair<Vec3, String> {
-        return trace("AirMouse_Calibration") {
+        return TraceUtils.section("AirMouse_Calibration_Apply") {
             val bias = CalibrationStore.gyroBias
             if (bias == null || bias.size < 3) {
                 raw.sanitize() to "Gyro not calibrated"
@@ -18,7 +18,7 @@ object SensorCalibration {
     }
 
     fun correctAccel(raw: Vec3): Pair<Vec3, String> {
-        return trace("AirMouse_Calibration") {
+        return TraceUtils.section("AirMouse_Calibration_Apply") {
             val offset = CalibrationStore.accelOffset
             val scale = CalibrationStore.accelScale
             if (offset == null || scale == null || offset.size < 3 || scale.size < 3) {
@@ -37,7 +37,7 @@ object SensorCalibration {
     }
 
     fun correctMag(raw: Vec3): Pair<Vec3, String> {
-        return trace("AirMouse_Calibration") {
+        return TraceUtils.section("AirMouse_Calibration_Apply") {
             val offset = CalibrationStore.magOffset
             val scale = CalibrationStore.magScale
             if (offset == null || scale == null || offset.size < 3 || scale.size < 3) {
@@ -56,14 +56,5 @@ object SensorCalibration {
 
     private fun Vec3.sanitize(): Vec3 {
         return if (isFinite()) this else Vec3.ZERO
-    }
-
-    private inline fun <T> trace(name: String, block: () -> T): T {
-        Trace.beginSection(name)
-        return try {
-            block()
-        } finally {
-            Trace.endSection()
-        }
     }
 }

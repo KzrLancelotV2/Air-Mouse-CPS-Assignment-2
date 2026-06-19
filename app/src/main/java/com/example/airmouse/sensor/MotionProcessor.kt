@@ -1,7 +1,7 @@
 package com.example.airmouse.sensor
 
-import android.os.Trace
 import com.example.airmouse.MousePacket
+import com.example.airmouse.TraceUtils
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
@@ -124,10 +124,9 @@ class MotionProcessor(
     }
 
     fun onFrame(frame: SensorFrame): MotionOutput? {
-        Trace.beginSection("AirMouse_MotionProcessor")
-        return try {
+        return TraceUtils.section("AirMouse_MotionProcessor") {
             val values = frame.values
-            if (values.size < 3) return null
+            if (values.size < 3) return@section null
             val raw = Vec3(values[0], values[1], values[2])
             when (frame.sensorType) {
                 android.hardware.Sensor.TYPE_ACCELEROMETER,
@@ -180,8 +179,6 @@ class MotionProcessor(
 
                 else -> null
             }
-        } finally {
-            Trace.endSection()
         }
     }
 
@@ -220,7 +217,8 @@ class MotionProcessor(
         dt: Float,
         gestureState: GestureState
     ): MovementComputation {
-        val sourceMovement = when (movementSource) {
+        return TraceUtils.section("AirMouse_CursorDelta") {
+            val sourceMovement = when (movementSource) {
             MovementSource.GYRO_RATE -> {
                 val horizontalRate = correctedGyro.z * HORIZONTAL_SIGN
                 val verticalRate = correctedGyro.x * VERTICAL_SIGN
@@ -243,59 +241,60 @@ class MotionProcessor(
             }
         }
 
-        var dx = sourceMovement.scaledX
-        var dy = sourceMovement.scaledY
-        var suppressionReason = "none"
-        val absX = abs(dx)
-        val absY = abs(dy)
-        if (gestureState.suppressMovement) {
-            dx = 0f
-            dy = 0f
-            suppressionReason = gestureState.suppressionReason
-        } else if (absX > 0f || absY > 0f) {
-            if (absX > absY * MOVEMENT_AXIS_DOMINANCE_RATIO && absY <= AXIS_LEAKAGE_MAX_DELTA) {
-                dy = 0f
-                suppressionReason = "Y leakage"
-            } else if (absY > absX * MOVEMENT_AXIS_DOMINANCE_RATIO && absX <= AXIS_LEAKAGE_MAX_DELTA) {
+            var dx = sourceMovement.scaledX
+            var dy = sourceMovement.scaledY
+            var suppressionReason = "none"
+            val absX = abs(dx)
+            val absY = abs(dy)
+            if (gestureState.suppressMovement) {
                 dx = 0f
-                suppressionReason = "X leakage"
+                dy = 0f
+                suppressionReason = gestureState.suppressionReason
+            } else if (absX > 0f || absY > 0f) {
+                if (absX > absY * MOVEMENT_AXIS_DOMINANCE_RATIO && absY <= AXIS_LEAKAGE_MAX_DELTA) {
+                    dy = 0f
+                    suppressionReason = "Y leakage"
+                } else if (absY > absX * MOVEMENT_AXIS_DOMINANCE_RATIO && absX <= AXIS_LEAKAGE_MAX_DELTA) {
+                    dx = 0f
+                    suppressionReason = "X leakage"
+                }
             }
+
+            val clampedX = clamp(dx, -MAX_DELTA, MAX_DELTA)
+            val clampedY = clamp(dy, -MAX_DELTA, MAX_DELTA)
+            val clamped = clampedX != dx || clampedY != dy
+
+            lastMovementDebug = String.format(
+                Locale.US,
+                "Movement cfg: hSign %.0f vSign %.0f sensX %.1f sensY %.1f deadband %.3f precision %.2f lowGain %.2f highGain %.2f exponent %.2f smoothAlpha %.2f clamp %.1f interval %.0fms\n" +
+                        "Movement mode=%s suppressed=%s raw gyro X %.3f Z %.3f signed rates X %.3f Y %.3f scaled %.2f/%.2f final %.2f/%.2f clamped=%s",
+                HORIZONTAL_SIGN,
+                VERTICAL_SIGN,
+                HORIZONTAL_SENSITIVITY,
+                VERTICAL_SENSITIVITY,
+                MOVEMENT_GYRO_DEADBAND,
+                PRECISION_ZONE_RAD_PER_SEC,
+                LOW_SPEED_GAIN,
+                HIGH_SPEED_GAIN,
+                RESPONSE_EXPONENT,
+                GYRO_SMOOTHING_ALPHA,
+                MAX_DELTA,
+                MOVEMENT_PACKET_INTERVAL_NANOS / 1_000_000f,
+                gestureState.mode,
+                suppressionReason,
+                correctedGyro.x,
+                correctedGyro.z,
+                sourceMovement.signedX,
+                sourceMovement.signedY,
+                sourceMovement.scaledX,
+                sourceMovement.scaledY,
+                clampedX,
+                clampedY,
+                clamped
+            )
+
+            MovementComputation(clampedX, clampedY)
         }
-
-        val clampedX = clamp(dx, -MAX_DELTA, MAX_DELTA)
-        val clampedY = clamp(dy, -MAX_DELTA, MAX_DELTA)
-        val clamped = clampedX != dx || clampedY != dy
-
-        lastMovementDebug = String.format(
-            Locale.US,
-            "Movement cfg: hSign %.0f vSign %.0f sensX %.1f sensY %.1f deadband %.3f precision %.2f lowGain %.2f highGain %.2f exponent %.2f smoothAlpha %.2f clamp %.1f interval %.0fms\n" +
-                    "Movement mode=%s suppressed=%s raw gyro X %.3f Z %.3f signed rates X %.3f Y %.3f scaled %.2f/%.2f final %.2f/%.2f clamped=%s",
-            HORIZONTAL_SIGN,
-            VERTICAL_SIGN,
-            HORIZONTAL_SENSITIVITY,
-            VERTICAL_SENSITIVITY,
-            MOVEMENT_GYRO_DEADBAND,
-            PRECISION_ZONE_RAD_PER_SEC,
-            LOW_SPEED_GAIN,
-            HIGH_SPEED_GAIN,
-            RESPONSE_EXPONENT,
-            GYRO_SMOOTHING_ALPHA,
-            MAX_DELTA,
-            MOVEMENT_PACKET_INTERVAL_NANOS / 1_000_000f,
-            gestureState.mode,
-            suppressionReason,
-            correctedGyro.x,
-            correctedGyro.z,
-            sourceMovement.signedX,
-            sourceMovement.signedY,
-            sourceMovement.scaledX,
-            sourceMovement.scaledY,
-            clampedX,
-            clampedY,
-            clamped
-        )
-
-        return MovementComputation(clampedX, clampedY)
     }
 
     private fun precisionCurve(value: Float): Float {
@@ -442,169 +441,194 @@ class MotionProcessor(
         }
 
         val gyro = correctedGyro
-        val accel = linearAccel
-        val yGyroDominant = abs(gyro.y) > abs(gyro.x) * AXIS_DOMINANCE_RATIO &&
-                abs(gyro.y) > abs(gyro.z) * AXIS_DOMINANCE_RATIO
-        val clickSignValue = gyro.y * CLICK_SIGN
-        val clickAllowed = nowNanos - lastClickNanos > GESTURE_COOLDOWN_NANOS &&
-                nowNanos - lastScrollNanos > GESTURE_MUTEX_NANOS
-        val clickFreezeRemainingMs = remainingMs(clickFreezeUntilNanos, nowNanos)
-        val clickCandidate = yGyroDominant && clickSignValue > CLICK_CANDIDATE_THRESHOLD_RAD_PER_SEC
+        var clickSignValue = 0f
+        var clickAllowed = false
 
-        if (clickFreezeRemainingMs > 0f) {
-            lastGestureDebug = gestureDebug(
-                mode = "clickFreeze",
-                clickSignValue = clickSignValue,
-                clickCandidate = clickCandidate,
-                clickAllowed = clickAllowed,
-                scrollCandidate = false,
-                scrollAllowed = false,
-                scrollBlockedReason = "click freeze active",
-                clickFreezeRemainingMs = clickFreezeRemainingMs,
-                scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
-            )
-            return GestureState(null, true, "click freeze", "clickFreeze")
+        val clickState = TraceUtils.section("AirMouse_ClickDetect") {
+            val yGyroDominant = abs(gyro.y) > abs(gyro.x) * AXIS_DOMINANCE_RATIO &&
+                    abs(gyro.y) > abs(gyro.z) * AXIS_DOMINANCE_RATIO
+            clickSignValue = gyro.y * CLICK_SIGN
+            clickAllowed = nowNanos - lastClickNanos > GESTURE_COOLDOWN_NANOS &&
+                    nowNanos - lastScrollNanos > GESTURE_MUTEX_NANOS
+            val clickFreezeRemainingMs = remainingMs(clickFreezeUntilNanos, nowNanos)
+            val clickCandidate = yGyroDominant && clickSignValue > CLICK_CANDIDATE_THRESHOLD_RAD_PER_SEC
+
+            if (clickFreezeRemainingMs > 0f) {
+                lastGestureDebug = gestureDebug(
+                    mode = "clickFreeze",
+                    clickSignValue = clickSignValue,
+                    clickCandidate = clickCandidate,
+                    clickAllowed = clickAllowed,
+                    scrollCandidate = false,
+                    scrollAllowed = false,
+                    scrollBlockedReason = "click freeze active",
+                    clickFreezeRemainingMs = clickFreezeRemainingMs,
+                    scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
+                )
+                return@section GestureState(null, true, "click freeze", "clickFreeze")
+            }
+
+            if (clickAllowed && yGyroDominant && clickSignValue > CLICK_THRESHOLD_RAD_PER_SEC) {
+                lastClickNanos = nowNanos
+                startGestureSettle(
+                    ActiveGestureSettle.CLICK,
+                    nowNanos,
+                    CLICK_FREEZE_NANOS,
+                    CLICK_MAX_SETTLE_NANOS
+                )
+                lastGestureDebug = gestureDebug(
+                    mode = "clickFreeze",
+                    clickSignValue = clickSignValue,
+                    clickCandidate = true,
+                    clickAllowed = true,
+                    scrollCandidate = false,
+                    scrollAllowed = false,
+                    scrollBlockedReason = "click emitted",
+                    clickFreezeRemainingMs = CLICK_FREEZE_NANOS / 1_000_000f,
+                    scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
+                )
+                return@section GestureState(GestureKind.CLICK, true, "click freeze", "clickFreeze")
+            }
+
+            if (clickCandidate) {
+                lastGestureDebug = gestureDebug(
+                    mode = "clickCandidate",
+                    clickSignValue = clickSignValue,
+                    clickCandidate = true,
+                    clickAllowed = clickAllowed,
+                    scrollCandidate = false,
+                    scrollAllowed = false,
+                    scrollBlockedReason = "click candidate has priority",
+                    clickFreezeRemainingMs = 0f,
+                    scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
+                )
+                return@section GestureState(null, true, "click candidate", "clickCandidate")
+            }
+            null
         }
+        if (clickState != null) return clickState
 
-        if (clickAllowed && yGyroDominant && clickSignValue > CLICK_THRESHOLD_RAD_PER_SEC) {
-            lastClickNanos = nowNanos
-            startGestureSettle(
-                ActiveGestureSettle.CLICK,
-                nowNanos,
-                CLICK_FREEZE_NANOS,
-                CLICK_MAX_SETTLE_NANOS
+        return TraceUtils.section("AirMouse_ScrollDetect") {
+            val accel = linearAccel
+            val yAccelDominant = abs(accel.y) > abs(accel.x) * AXIS_DOMINANCE_RATIO &&
+                    abs(accel.y) > abs(accel.z) * AXIS_DOMINANCE_RATIO
+            val heavyRotation = abs(gyro.x) + abs(gyro.y) + abs(gyro.z) > SCROLL_HEAVY_ROTATION_SUPPRESSION_THRESHOLD
+            val scrollAllowed = nowNanos - lastScrollNanos > SCROLL_GESTURE_COOLDOWN_NANOS &&
+                    nowNanos - lastClickNanos > GESTURE_MUTEX_NANOS
+            val scrollSignal = accel.y * SCROLL_SIGN
+            val scrollMagnitude = abs(scrollSignal)
+            val scrollPeakMagnitude = abs(scrollPeakSignedY)
+            val scrollImpulseMagnitude = abs(scrollImpulseSignedY)
+            val candidateDirection = scrollCandidateDirection(
+                scrollSignal,
+                scrollPeakSignedY,
+                scrollImpulseSignedY,
+                SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD,
+                SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD,
+                SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD,
+                SCROLL_DOWN_CANDIDATE_IMPULSE_THRESHOLD
             )
-            lastGestureDebug = gestureDebug(
-                mode = "clickFreeze",
-                clickSignValue = clickSignValue,
-                clickCandidate = true,
-                clickAllowed = true,
-                scrollCandidate = false,
-                scrollAllowed = false,
-                scrollBlockedReason = "click emitted",
-                clickFreezeRemainingMs = CLICK_FREEZE_NANOS / 1_000_000f,
-                scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
-            )
-            return GestureState(GestureKind.CLICK, true, "click freeze", "clickFreeze")
-        }
+            if (scrollArmed && yAccelDominant && scrollCandidateDirection == 0 && candidateDirection != 0) {
+                scrollCandidateDirection = candidateDirection
+                scrollCandidateStartedNanos = nowNanos
+            }
+            val candidateTimedOut = scrollCandidateDirection != 0 &&
+                    nowNanos - scrollCandidateStartedNanos > SCROLL_CANDIDATE_TIMEOUT_NANOS
+            val sameDirectionTrigger = scrollCandidateDirection != 0 &&
+                    hasScrollTriggerForDirection(scrollCandidateDirection, scrollSignal)
+            val scrollCandidate = scrollArmed && yAccelDominant && scrollCandidateDirection != 0
+            val scrollTrigger = scrollCandidate &&
+                    !heavyRotation &&
+                    sameDirectionTrigger
+            val scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
 
-        if (clickCandidate) {
-            lastGestureDebug = gestureDebug(
-                mode = "clickCandidate",
-                clickSignValue = clickSignValue,
-                clickCandidate = true,
-                clickAllowed = clickAllowed,
-                scrollCandidate = false,
-                scrollAllowed = false,
-                scrollBlockedReason = "click candidate has priority",
-                clickFreezeRemainingMs = 0f,
-                scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
-            )
-            return GestureState(null, true, "click candidate", "clickCandidate")
-        }
+            val neutralNow = scrollMagnitude < SCROLL_REARM_ACCEL_THRESHOLD &&
+                    scrollPeakMagnitude < SCROLL_REARM_PEAK_THRESHOLD &&
+                    scrollImpulseMagnitude < SCROLL_REARM_IMPULSE_THRESHOLD
+            if (neutralNow) {
+                if (scrollNeutralSinceNanos <= 0L) scrollNeutralSinceNanos = nowNanos
+                if (nowNanos - scrollNeutralSinceNanos >= SCROLL_REARM_STABLE_NANOS) {
+                    scrollArmed = true
+                    clearScrollCandidate()
+                }
+            } else {
+                scrollNeutralSinceNanos = 0L
+            }
 
-        val yAccelDominant = abs(accel.y) > abs(accel.x) * AXIS_DOMINANCE_RATIO &&
-                abs(accel.y) > abs(accel.z) * AXIS_DOMINANCE_RATIO
-        val heavyRotation = abs(gyro.x) + abs(gyro.y) + abs(gyro.z) > SCROLL_HEAVY_ROTATION_SUPPRESSION_THRESHOLD
-        val scrollAllowed = nowNanos - lastScrollNanos > SCROLL_GESTURE_COOLDOWN_NANOS &&
-                nowNanos - lastClickNanos > GESTURE_MUTEX_NANOS
-        val scrollSignal = accel.y * SCROLL_SIGN
-        val scrollMagnitude = abs(scrollSignal)
-        val scrollPeakMagnitude = abs(scrollPeakSignedY)
-        val scrollImpulseMagnitude = abs(scrollImpulseSignedY)
-        val candidateDirection = scrollCandidateDirection(
-            scrollSignal,
-            scrollPeakSignedY,
-            scrollImpulseSignedY,
-            SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD,
-            SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD,
-            SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD,
-            SCROLL_DOWN_CANDIDATE_IMPULSE_THRESHOLD
-        )
-        if (scrollArmed && yAccelDominant && scrollCandidateDirection == 0 && candidateDirection != 0) {
-            scrollCandidateDirection = candidateDirection
-            scrollCandidateStartedNanos = nowNanos
-        }
-        val candidateTimedOut = scrollCandidateDirection != 0 &&
-                nowNanos - scrollCandidateStartedNanos > SCROLL_CANDIDATE_TIMEOUT_NANOS
-        val sameDirectionTrigger = scrollCandidateDirection != 0 &&
-                hasScrollTriggerForDirection(scrollCandidateDirection, scrollSignal)
-        val scrollCandidate = scrollArmed && yAccelDominant && scrollCandidateDirection != 0
-        val scrollTrigger = scrollCandidate &&
-                !heavyRotation &&
-                sameDirectionTrigger
-        val scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
-
-        val neutralNow = scrollMagnitude < SCROLL_REARM_ACCEL_THRESHOLD &&
-                scrollPeakMagnitude < SCROLL_REARM_PEAK_THRESHOLD &&
-                scrollImpulseMagnitude < SCROLL_REARM_IMPULSE_THRESHOLD
-        if (neutralNow) {
-            if (scrollNeutralSinceNanos <= 0L) scrollNeutralSinceNanos = nowNanos
-            if (nowNanos - scrollNeutralSinceNanos >= SCROLL_REARM_STABLE_NANOS) {
-                scrollArmed = true
+            if (candidateTimedOut && !sameDirectionTrigger) {
                 clearScrollCandidate()
             }
-        } else {
-            scrollNeutralSinceNanos = 0L
-        }
 
-        if (candidateTimedOut && !sameDirectionTrigger) {
-            clearScrollCandidate()
-        }
+            if (scrollFreezeRemainingMs > 0f) {
+                lastGestureDebug = gestureDebug(
+                    mode = "scrollFreeze",
+                    clickSignValue = clickSignValue,
+                    clickCandidate = false,
+                    clickAllowed = clickAllowed,
+                    scrollCandidate = scrollCandidate,
+                    scrollAllowed = scrollAllowed,
+                    scrollBlockedReason = "scroll freeze active",
+                    clickFreezeRemainingMs = 0f,
+                    scrollFreezeRemainingMs = scrollFreezeRemainingMs,
+                    yAccelDominant = yAccelDominant,
+                    heavyRotation = heavyRotation
+                )
+                return@section GestureState(null, true, "scroll freeze", "scrollFreeze")
+            }
 
-        if (scrollFreezeRemainingMs > 0f) {
+            if (scrollAllowed && scrollTrigger) {
+                lastScrollNanos = nowNanos
+                startGestureSettle(
+                    ActiveGestureSettle.SCROLL,
+                    nowNanos,
+                    SCROLL_FREEZE_NANOS,
+                    SCROLL_MAX_SETTLE_NANOS
+                )
+                scrollArmed = false
+                clearScrollWindow()
+                val gesture = if (scrollCandidateDirection > 0) GestureKind.SCROLL_UP else GestureKind.SCROLL_DOWN
+                clearScrollCandidate()
+                scrollNeutralSinceNanos = 0L
+                lastGestureDebug = gestureDebug(
+                    mode = "scrollFreeze",
+                    clickSignValue = clickSignValue,
+                    clickCandidate = false,
+                    clickAllowed = clickAllowed,
+                    scrollCandidate = true,
+                    scrollAllowed = true,
+                    scrollBlockedReason = "scroll emitted",
+                    clickFreezeRemainingMs = 0f,
+                    scrollFreezeRemainingMs = SCROLL_FREEZE_NANOS / 1_000_000f,
+                    yAccelDominant = yAccelDominant,
+                    heavyRotation = heavyRotation
+                )
+                return@section GestureState(gesture, true, "scroll freeze", "scrollFreeze")
+            }
+
+            if (scrollCandidate) {
+                lastGestureDebug = gestureDebug(
+                    mode = "scrollCandidate",
+                    clickSignValue = clickSignValue,
+                    clickCandidate = false,
+                    clickAllowed = clickAllowed,
+                    scrollCandidate = true,
+                    scrollAllowed = scrollAllowed,
+                    scrollBlockedReason = scrollBlockedReason(scrollAllowed, yAccelDominant, heavyRotation),
+                    clickFreezeRemainingMs = 0f,
+                    scrollFreezeRemainingMs = 0f,
+                    yAccelDominant = yAccelDominant,
+                    heavyRotation = heavyRotation
+                )
+                return@section GestureState(null, true, "scroll candidate", "scrollCandidate")
+            }
+
+            updateIdleBaseline()
             lastGestureDebug = gestureDebug(
-                mode = "scrollFreeze",
+                mode = "cursor",
                 clickSignValue = clickSignValue,
                 clickCandidate = false,
                 clickAllowed = clickAllowed,
-                scrollCandidate = scrollCandidate,
-                scrollAllowed = scrollAllowed,
-                scrollBlockedReason = "scroll freeze active",
-                clickFreezeRemainingMs = 0f,
-                scrollFreezeRemainingMs = scrollFreezeRemainingMs,
-                yAccelDominant = yAccelDominant,
-                heavyRotation = heavyRotation
-            )
-            return GestureState(null, true, "scroll freeze", "scrollFreeze")
-        }
-
-        if (scrollAllowed && scrollTrigger) {
-            lastScrollNanos = nowNanos
-            startGestureSettle(
-                ActiveGestureSettle.SCROLL,
-                nowNanos,
-                SCROLL_FREEZE_NANOS,
-                SCROLL_MAX_SETTLE_NANOS
-            )
-            scrollArmed = false
-            clearScrollWindow()
-            val gesture = if (scrollCandidateDirection > 0) GestureKind.SCROLL_UP else GestureKind.SCROLL_DOWN
-            clearScrollCandidate()
-            scrollNeutralSinceNanos = 0L
-            lastGestureDebug = gestureDebug(
-                mode = "scrollFreeze",
-                clickSignValue = clickSignValue,
-                clickCandidate = false,
-                clickAllowed = clickAllowed,
-                scrollCandidate = true,
-                scrollAllowed = true,
-                scrollBlockedReason = "scroll emitted",
-                clickFreezeRemainingMs = 0f,
-                scrollFreezeRemainingMs = SCROLL_FREEZE_NANOS / 1_000_000f,
-                yAccelDominant = yAccelDominant,
-                heavyRotation = heavyRotation
-            )
-            return GestureState(gesture, true, "scroll freeze", "scrollFreeze")
-        }
-
-        if (scrollCandidate) {
-            lastGestureDebug = gestureDebug(
-                mode = "scrollCandidate",
-                clickSignValue = clickSignValue,
-                clickCandidate = false,
-                clickAllowed = clickAllowed,
-                scrollCandidate = true,
+                scrollCandidate = false,
                 scrollAllowed = scrollAllowed,
                 scrollBlockedReason = scrollBlockedReason(scrollAllowed, yAccelDominant, heavyRotation),
                 clickFreezeRemainingMs = 0f,
@@ -612,24 +636,8 @@ class MotionProcessor(
                 yAccelDominant = yAccelDominant,
                 heavyRotation = heavyRotation
             )
-            return GestureState(null, true, "scroll candidate", "scrollCandidate")
+            GestureState(null, false, "none", "cursor")
         }
-
-        updateIdleBaseline()
-        lastGestureDebug = gestureDebug(
-            mode = "cursor",
-            clickSignValue = clickSignValue,
-            clickCandidate = false,
-            clickAllowed = clickAllowed,
-            scrollCandidate = false,
-            scrollAllowed = scrollAllowed,
-            scrollBlockedReason = scrollBlockedReason(scrollAllowed, yAccelDominant, heavyRotation),
-            clickFreezeRemainingMs = 0f,
-            scrollFreezeRemainingMs = 0f,
-            yAccelDominant = yAccelDominant,
-            heavyRotation = heavyRotation
-        )
-        return GestureState(null, false, "none", "cursor")
     }
 
     private fun scrollCandidateDirection(
@@ -767,32 +775,36 @@ class MotionProcessor(
         deltaY: Float,
         gesture: GestureKind?
     ): MousePacket? {
-        if (gesture != null) {
-            val packet = when (gesture) {
-                GestureKind.CLICK -> packetFactory(sensorTimestampNanos, 0f, 0f, true, 0, true)
-                GestureKind.SCROLL_UP -> packetFactory(sensorTimestampNanos, 0f, 0f, false, 1, true)
-                GestureKind.SCROLL_DOWN -> packetFactory(sensorTimestampNanos, 0f, 0f, false, -1, true)
+        return TraceUtils.section("AirMouse_PacketCreate") {
+            if (gesture != null) {
+                val packet = when (gesture) {
+                    GestureKind.CLICK -> packetFactory(sensorTimestampNanos, 0f, 0f, true, 0, true)
+                    GestureKind.SCROLL_UP -> packetFactory(sensorTimestampNanos, 0f, 0f, false, 1, true)
+                    GestureKind.SCROLL_DOWN -> packetFactory(sensorTimestampNanos, 0f, 0f, false, -1, true)
+                }
+                TraceUtils.counter("AirMouse_MotionPacketSeq", packet.sequenceNumber)
+                lastPacketDebug = "Packet: reliable ${gesture.name} seq=${packet.sequenceNumber}"
+                return@section packet
             }
-            lastPacketDebug = "Packet: reliable ${gesture.name} seq=${packet.sequenceNumber}"
-            return packet
-        }
 
-        if (sensorTimestampNanos - lastMovementPacketNanos < MOVEMENT_PACKET_INTERVAL_NANOS) {
-            lastPacketDebug = "Packet: movement held for rate limit"
-            return null
+            if (sensorTimestampNanos - lastMovementPacketNanos < MOVEMENT_PACKET_INTERVAL_NANOS) {
+                lastPacketDebug = "Packet: movement held for rate limit"
+                return@section null
+            }
+            if (abs(deltaX) < MOVEMENT_PACKET_DEADZONE && abs(deltaY) < MOVEMENT_PACKET_DEADZONE) {
+                lastPacketDebug = String.format(
+                    Locale.US,
+                    "Packet: movement suppressed by packet deadzone %.2f",
+                    MOVEMENT_PACKET_DEADZONE
+                )
+                return@section null
+            }
+            lastMovementPacketNanos = sensorTimestampNanos
+            val packet = packetFactory(sensorTimestampNanos, deltaX, deltaY, false, 0, false)
+            TraceUtils.counter("AirMouse_MotionPacketSeq", packet.sequenceNumber)
+            lastPacketDebug = String.format(Locale.US, "Packet: movement seq=%d dx %.2f dy %.2f", packet.sequenceNumber, deltaX, deltaY)
+            packet
         }
-        if (abs(deltaX) < MOVEMENT_PACKET_DEADZONE && abs(deltaY) < MOVEMENT_PACKET_DEADZONE) {
-            lastPacketDebug = String.format(
-                Locale.US,
-                "Packet: movement suppressed by packet deadzone %.2f",
-                MOVEMENT_PACKET_DEADZONE
-            )
-            return null
-        }
-        lastMovementPacketNanos = sensorTimestampNanos
-        val packet = packetFactory(sensorTimestampNanos, deltaX, deltaY, false, 0, false)
-        lastPacketDebug = String.format(Locale.US, "Packet: movement seq=%d dx %.2f dy %.2f", packet.sequenceNumber, deltaX, deltaY)
-        return packet
     }
 
     private fun output(

@@ -23,7 +23,7 @@
 - ACK receive path for reliable click/scroll packets.
 - Bounded reliable packet queue with retry/drop behavior.
 - Python UDP receiver using PyAutoGUI, ACKs, CLI arguments, and dry-run mode.
-- Perfetto trace markers around sensor event copy, calibration correction, Madgwick update, motion processing, and UDP send.
+- Perfetto trace markers/counters around sensor event copy, calibration correction, gyro/accel/mag calibration, gravity filtering, Madgwick/complementary update, cursor/click/scroll processing, packet creation, UI updates, UDP send/ACK/retry, sensor sample intervals, packet sequence, pending ACK count, and final deltas.
 
 ## Still Requires Real-Device Tuning
 

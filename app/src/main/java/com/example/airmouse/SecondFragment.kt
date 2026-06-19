@@ -13,6 +13,7 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.navigation.fragment.findNavController
 import com.example.airmouse.databinding.FragmentSecondBinding
+import com.example.airmouse.TraceUtils
 import java.util.Locale
 import kotlin.math.min
 import kotlin.math.max
@@ -144,72 +145,74 @@ class SecondFragment : Fragment(), SensorEventListener {
     }
 
     private fun computeAccelerometerCalibrationIfReady(): Boolean {
-        val positions = CalibrationStore.accelSixPositions
+        return TraceUtils.section("AirMouse_AccelCalibration") {
+            val positions = CalibrationStore.accelSixPositions
 
-        if (positions.size < 6) return false
+            if (positions.size < 6) return@section false
 
-        val minValues = FloatArray(3) { Float.POSITIVE_INFINITY }
-        val maxValues = FloatArray(3) { Float.NEGATIVE_INFINITY }
+            val minValues = FloatArray(3) { Float.POSITIVE_INFINITY }
+            val maxValues = FloatArray(3) { Float.NEGATIVE_INFINITY }
 
-        positions.forEach { sample ->
-            for (i in 0..2) {
-                minValues[i] = min(minValues[i], sample[i])
-                maxValues[i] = max(maxValues[i], sample[i])
+            positions.forEach { sample ->
+                for (i in 0..2) {
+                    minValues[i] = min(minValues[i], sample[i])
+                    maxValues[i] = max(maxValues[i], sample[i])
+                }
             }
-        }
 
-        val offsetX = (maxValues[0] + minValues[0]) / 2f
-        val offsetY = (maxValues[1] + minValues[1]) / 2f
-        val offsetZ = (maxValues[2] + minValues[2]) / 2f
+            val offsetX = (maxValues[0] + minValues[0]) / 2f
+            val offsetY = (maxValues[1] + minValues[1]) / 2f
+            val offsetZ = (maxValues[2] + minValues[2]) / 2f
 
-        val scaleX = (maxValues[0] - minValues[0]) / 2f
-        val scaleY = (maxValues[1] - minValues[1]) / 2f
-        val scaleZ = (maxValues[2] - minValues[2]) / 2f
+            val scaleX = (maxValues[0] - minValues[0]) / 2f
+            val scaleY = (maxValues[1] - minValues[1]) / 2f
+            val scaleZ = (maxValues[2] - minValues[2]) / 2f
 
-        if (listOf(scaleX, scaleY, scaleZ).any { !it.isFinite() || abs(it) < 0.5f }) {
-            CalibrationStore.accelOffset = null
-            CalibrationStore.accelScale = null
-            CalibrationStore.accelLastValidationError =
-                "One or more axes did not show a clear +/- gravity range."
+            if (listOf(scaleX, scaleY, scaleZ).any { !it.isFinite() || abs(it) < 0.5f }) {
+                CalibrationStore.accelOffset = null
+                CalibrationStore.accelScale = null
+                CalibrationStore.accelLastValidationError =
+                    "One or more axes did not show a clear +/- gravity range."
+                binding.accelResultText.text =
+                    buildAccelerometerDebugText(
+                        minValues,
+                        maxValues,
+                        floatArrayOf(offsetX, offsetY, offsetZ),
+                        floatArrayOf(scaleX, scaleY, scaleZ),
+                        "Accelerometer calibration invalid. Please retry all six positions. Keep the phone still for each sample."
+                    )
+                binding.calibrationStatusText.text =
+                    "Status: accelerometer calibration invalid. Press retry to clear these samples and start from position 1."
+                binding.accelCaptureButton.text = "Retry Accelerometer 6 Positions"
+                return@section false
+            }
+
+            CalibrationStore.accelOffset = floatArrayOf(offsetX, offsetY, offsetZ)
+            CalibrationStore.accelScale = floatArrayOf(scaleX, scaleY, scaleZ)
+            CalibrationStore.accelLastValidationError = null
+
             binding.accelResultText.text =
-                buildAccelerometerDebugText(
-                    minValues,
-                    maxValues,
-                    floatArrayOf(offsetX, offsetY, offsetZ),
-                    floatArrayOf(scaleX, scaleY, scaleZ),
-                    "Accelerometer calibration invalid. Please retry all six positions. Keep the phone still for each sample."
+                String.format(
+                    Locale.US,
+                    "Accelerometer calibration completed:\n" +
+                            "Offset X %.3f  Y %.3f  Z %.3f\n" +
+                            "Half-range scale X %.3f  Y %.3f  Z %.3f\n" +
+                            "Runtime correction maps each half-range to %.5f m/s^2.",
+                    offsetX,
+                    offsetY,
+                    offsetZ,
+                    scaleX,
+                    scaleY,
+                    scaleZ,
+                    SensorManager.GRAVITY_EARTH
                 )
+
             binding.calibrationStatusText.text =
-                "Status: accelerometer calibration invalid. Press retry to clear these samples and start from position 1."
-            binding.accelCaptureButton.text = "Retry Accelerometer 6 Positions"
-            return false
+                "Status: accelerometer calibration completed."
+            binding.accelCaptureButton.text =
+                "2. Accelerometer 6 Positions Completed"
+            true
         }
-
-        CalibrationStore.accelOffset = floatArrayOf(offsetX, offsetY, offsetZ)
-        CalibrationStore.accelScale = floatArrayOf(scaleX, scaleY, scaleZ)
-        CalibrationStore.accelLastValidationError = null
-
-        binding.accelResultText.text =
-            String.format(
-                Locale.US,
-                "Accelerometer calibration completed:\n" +
-                        "Offset X %.3f  Y %.3f  Z %.3f\n" +
-                        "Half-range scale X %.3f  Y %.3f  Z %.3f\n" +
-                        "Runtime correction maps each half-range to %.5f m/s^2.",
-                offsetX,
-                offsetY,
-                offsetZ,
-                scaleX,
-                scaleY,
-                scaleZ,
-                SensorManager.GRAVITY_EARTH
-            )
-
-        binding.calibrationStatusText.text =
-            "Status: accelerometer calibration completed."
-        binding.accelCaptureButton.text =
-            "2. Accelerometer 6 Positions Completed"
-        return true
     }
 
     private fun startSensors() {
@@ -382,41 +385,43 @@ class SecondFragment : Fragment(), SensorEventListener {
         )
     }
     private fun computeMagnetometerCalibration() {
-        val minValues = CalibrationStore.magMin
-        val maxValues = CalibrationStore.magMax
+        TraceUtils.section("AirMouse_MagCalibration") {
+            val minValues = CalibrationStore.magMin
+            val maxValues = CalibrationStore.magMax
 
-        val offsetX = (maxValues[0] + minValues[0]) / 2f
-        val offsetY = (maxValues[1] + minValues[1]) / 2f
-        val offsetZ = (maxValues[2] + minValues[2]) / 2f
+            val offsetX = (maxValues[0] + minValues[0]) / 2f
+            val offsetY = (maxValues[1] + minValues[1]) / 2f
+            val offsetZ = (maxValues[2] + minValues[2]) / 2f
 
-        val scaleX = (maxValues[0] - minValues[0]) / 2f
-        val scaleY = (maxValues[1] - minValues[1]) / 2f
-        val scaleZ = (maxValues[2] - minValues[2]) / 2f
+            val scaleX = (maxValues[0] - minValues[0]) / 2f
+            val scaleY = (maxValues[1] - minValues[1]) / 2f
+            val scaleZ = (maxValues[2] - minValues[2]) / 2f
 
-        if (listOf(scaleX, scaleY, scaleZ).any { !it.isFinite() || abs(it) < 0.01f }) {
+            if (listOf(scaleX, scaleY, scaleZ).any { !it.isFinite() || abs(it) < 0.01f }) {
+                binding.magResultText.text =
+                    "Mag calibration invalid. Move the phone through a wider figure-8 and try again."
+                binding.calibrationStatusText.text =
+                    "Status: magnetometer calibration failed because one axis range was too small."
+                return@section
+            }
+
+            CalibrationStore.magOffset = floatArrayOf(offsetX, offsetY, offsetZ)
+            CalibrationStore.magScale = floatArrayOf(scaleX, scaleY, scaleZ)
+
             binding.magResultText.text =
-                "Mag calibration invalid. Move the phone through a wider figure-8 and try again."
-            binding.calibrationStatusText.text =
-                "Status: magnetometer calibration failed because one axis range was too small."
-            return
+                String.format(
+                    Locale.US,
+                    "Mag calibration completed:\n" +
+                            "Offset X %.2f Y %.2f Z %.2f\n" +
+                            "Scale X %.2f Y %.2f Z %.2f",
+                    offsetX,
+                    offsetY,
+                    offsetZ,
+                    scaleX,
+                    scaleY,
+                    scaleZ
+                )
         }
-
-        CalibrationStore.magOffset = floatArrayOf(offsetX, offsetY, offsetZ)
-        CalibrationStore.magScale = floatArrayOf(scaleX, scaleY, scaleZ)
-
-        binding.magResultText.text =
-            String.format(
-                Locale.US,
-                "Mag calibration completed:\n" +
-                        "Offset X %.2f Y %.2f Z %.2f\n" +
-                        "Scale X %.2f Y %.2f Z %.2f",
-                offsetX,
-                offsetY,
-                offsetZ,
-                scaleX,
-                scaleY,
-                scaleZ
-            )
     }
 
 
@@ -446,9 +451,14 @@ class SecondFragment : Fragment(), SensorEventListener {
     override fun onSensorChanged(event: SensorEvent?) {
         if (event == null || _binding == null) return
 
-        val x = event.values[0]
-        val y = event.values[1]
-        val z = event.values[2]
+        val values = TraceUtils.section("AirMouse_SensorEvent_Copy") {
+            TraceUtils.section("AirMouse_SensorEvent_${TraceUtils.sensorName(event.sensor.type)}") {
+                floatArrayOf(event.values[0], event.values[1], event.values[2])
+            }
+        }
+        val x = values[0]
+        val y = values[1]
+        val z = values[2]
 
         when (event.sensor.type) {
             Sensor.TYPE_ACCELEROMETER,
@@ -473,42 +483,46 @@ class SecondFragment : Fragment(), SensorEventListener {
     }
 
     private fun collectGyroSample(x: Float, y: Float, z: Float) {
-        gyroSamples.add(floatArrayOf(x, y, z))
-
-        binding.gyroResultText.text =
-            "Gyro bias: collecting ${gyroSamples.size}/$gyroTargetSamples"
-
-        if (gyroSamples.size >= gyroTargetSamples) {
-            collectingGyro = false
-
-            val biasX = gyroSamples.map { it[0] }.average().toFloat()
-            val biasY = gyroSamples.map { it[1] }.average().toFloat()
-            val biasZ = gyroSamples.map { it[2] }.average().toFloat()
-
-            CalibrationStore.gyroBias = floatArrayOf(biasX, biasY, biasZ)
+        TraceUtils.section("AirMouse_GyroCalibration") {
+            gyroSamples.add(floatArrayOf(x, y, z))
 
             binding.gyroResultText.text =
-                String.format(
-                    Locale.US,
-                    "Gyro bias saved: X %.5f  Y %.5f  Z %.5f",
-                    biasX,
-                    biasY,
-                    biasZ
-                )
+                "Gyro bias: collecting ${gyroSamples.size}/$gyroTargetSamples"
 
-            binding.calibrationStatusText.text =
-                "Status: gyroscope bias collection completed."
+            if (gyroSamples.size >= gyroTargetSamples) {
+                collectingGyro = false
+
+                val biasX = gyroSamples.map { it[0] }.average().toFloat()
+                val biasY = gyroSamples.map { it[1] }.average().toFloat()
+                val biasZ = gyroSamples.map { it[2] }.average().toFloat()
+
+                CalibrationStore.gyroBias = floatArrayOf(biasX, biasY, biasZ)
+
+                binding.gyroResultText.text =
+                    String.format(
+                        Locale.US,
+                        "Gyro bias saved: X %.5f  Y %.5f  Z %.5f",
+                        biasX,
+                        biasY,
+                        biasZ
+                    )
+
+                binding.calibrationStatusText.text =
+                    "Status: gyroscope bias collection completed."
+            }
         }
     }
 
     private fun updateMagnetometerMinMax(x: Float, y: Float, z: Float) {
-        CalibrationStore.magMin[0] = min(CalibrationStore.magMin[0], x)
-        CalibrationStore.magMin[1] = min(CalibrationStore.magMin[1], y)
-        CalibrationStore.magMin[2] = min(CalibrationStore.magMin[2], z)
+        TraceUtils.section("AirMouse_MagCalibration") {
+            CalibrationStore.magMin[0] = min(CalibrationStore.magMin[0], x)
+            CalibrationStore.magMin[1] = min(CalibrationStore.magMin[1], y)
+            CalibrationStore.magMin[2] = min(CalibrationStore.magMin[2], z)
 
-        CalibrationStore.magMax[0] = max(CalibrationStore.magMax[0], x)
-        CalibrationStore.magMax[1] = max(CalibrationStore.magMax[1], y)
-        CalibrationStore.magMax[2] = max(CalibrationStore.magMax[2], z)
+            CalibrationStore.magMax[0] = max(CalibrationStore.magMax[0], x)
+            CalibrationStore.magMax[1] = max(CalibrationStore.magMax[1], y)
+            CalibrationStore.magMax[2] = max(CalibrationStore.magMax[2], z)
+        }
 
         updateMagnetometerText()
     }

@@ -119,11 +119,29 @@ A complementary/simple fallback is also implemented. It integrates gyro orientat
 
 Perfetto trace markers were added:
 
-- `AirMouse_SensorEvent`
-- `AirMouse_Calibration`
-- `AirMouse_Madgwick`
+- `AirMouse_SensorEvent_Copy`
+- `AirMouse_SensorEvent_ACCEL`
+- `AirMouse_SensorEvent_GYRO`
+- `AirMouse_SensorEvent_MAG`
+- `AirMouse_Calibration_Apply`
+- `AirMouse_GyroCalibration`
+- `AirMouse_AccelCalibration`
+- `AirMouse_MagCalibration`
+- `AirMouse_GravityFilter`
+- `AirMouse_Madgwick_Update`
+- `AirMouse_Complementary_Update`
 - `AirMouse_MotionProcessor`
+- `AirMouse_CursorDelta`
+- `AirMouse_ClickDetect`
+- `AirMouse_ScrollDetect`
+- `AirMouse_PacketCreate`
 - `AirMouse_UDPSend`
+- `AirMouse_UDP_AckReceive`
+- `AirMouse_UDP_Retry`
+- `AirMouse_UI_StatusUpdate`
+- `AirMouse_UI_PreviewUpdate`
+
+Perfetto counters were added for sensor sample intervals, final movement deltas, packet sequence, and pending reliable packet count.
 
 ## Movement, Click, and Scroll
 
@@ -164,6 +182,8 @@ Example:
   "seq": 12,
   "timestamp": 1717420000000,
   "sensorTimestampNanos": 123456789,
+  "createdElapsedRealtimeNanos": 9876543210,
+  "sentElapsedRealtimeNanos": 9876550000,
   "deltaX": 3.5,
   "deltaY": -1.2,
   "click": false,
