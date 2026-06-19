@@ -20,10 +20,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Receive AirMouse UDP packets and control the laptop mouse.")
     parser.add_argument("--host", default="0.0.0.0", help="UDP bind host. Default: 0.0.0.0")
     parser.add_argument("--port", type=int, default=5000, help="UDP bind port. Default: 5000")
-    parser.add_argument("--move-scale", type=float, default=1.0, help="Multiplier for cursor movement deltas.")
-    parser.add_argument("--scroll-scale", type=int, default=12, help="Total scroll clicks per scroll packet.")
-    parser.add_argument("--scroll-steps", type=int, default=3, help="Split each scroll packet into this many small steps.")
-    parser.add_argument("--scroll-duration", type=float, default=0.09, help="Seconds over which to apply one scroll packet.")
+    parser.add_argument("--move-scale", type=float, default=10.0, help="Multiplier for relative cursor movement deltas.")
+    parser.add_argument("--scroll-scale", type=int, default=180, help="Total scroll clicks per scroll packet.")
+    parser.add_argument("--scroll-steps", type=int, default=10, help="Split each scroll packet into this many small steps.")
+    parser.add_argument("--scroll-duration", type=float, default=0.22, help="Seconds over which to apply one scroll packet.")
     parser.add_argument("--dry-run", action="store_true", help="Print packets and ACKs without moving the mouse.")
     parser.add_argument(
         "--debug",
@@ -71,28 +71,6 @@ def local_ipv4_candidates() -> list[str]:
     return sorted(address for address in addresses if not address.startswith("127."))
 
 
-class ScreenCursor:
-    def __init__(self, pyautogui) -> None:
-        self.pyautogui = pyautogui
-        size = pyautogui.size()
-        position = pyautogui.position()
-        self.width = int(size.width)
-        self.height = int(size.height)
-        self.x = float(position.x)
-        self.y = float(position.y)
-
-    def move_by(self, delta_x: float, delta_y: float) -> tuple[int, int]:
-        self.x = min(max(self.x + delta_x, 0.0), float(self.width - 1))
-        self.y = min(max(self.y + delta_y, 0.0), float(self.height - 1))
-        target_x = int(round(self.x))
-        target_y = int(round(self.y))
-        self.pyautogui.moveTo(target_x, target_y, duration=0)
-        return target_x, target_y
-
-    def position_text(self) -> str:
-        return f"cursor=({int(round(self.x))},{int(round(self.y))}) screen={self.width}x{self.height}"
-
-
 def handle_packet(
     packet: Dict[str, Any],
     pyautogui,
@@ -102,7 +80,6 @@ def handle_packet(
     scroll_duration: float,
     dry_run: bool,
     gesture_dry_run: bool,
-    screen_cursor: ScreenCursor | None,
 ) -> None:
     delta_x = as_float(packet, "deltaX") * move_scale
     delta_y = as_float(packet, "deltaY") * move_scale
@@ -113,10 +90,7 @@ def handle_packet(
         return
 
     if delta_x or delta_y:
-        if screen_cursor is not None:
-            screen_cursor.move_by(delta_x, delta_y)
-        else:
-            pyautogui.moveRel(delta_x, delta_y, duration=0)
+        pyautogui.moveRel(delta_x, delta_y, duration=0)
     if click:
         if gesture_dry_run:
             print("gesture-dry-run: LEFT CLICK detected, not applying to PC", flush=True)
@@ -158,7 +132,6 @@ def main() -> int:
     args = parse_args()
     gesture_debug = args.debug or args.gesture_dry_run
     pyautogui = load_pyautogui(args.dry_run)
-    screen_cursor = None if pyautogui is None else ScreenCursor(pyautogui)
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
         server.settimeout(0.25)
@@ -185,8 +158,6 @@ def main() -> int:
                 + ", ".join(candidates),
                 flush=True,
             )
-        if screen_cursor is not None:
-            print(f"Detected display: {screen_cursor.position_text()}", flush=True)
         print("Waiting for Android packets. Press Ctrl+C to stop.", flush=True)
 
         try:
@@ -207,7 +178,6 @@ def main() -> int:
                     args.scroll_duration,
                     args.dry_run,
                     gesture_debug,
-                    screen_cursor,
                 )
         except KeyboardInterrupt:
             print("\nAirMouse UDP server stopped.", flush=True)
@@ -227,7 +197,6 @@ def process_datagram(
     scroll_duration: float,
     dry_run: bool,
     gesture_debug: bool,
-    screen_cursor: ScreenCursor | None,
 ) -> None:
     try:
         text = data.decode("utf-8")
@@ -250,6 +219,11 @@ def process_datagram(
         flush=True,
     )
 
+    if requires_ack and seq is not None:
+        ack = json.dumps({"ack": seq}).encode("utf-8")
+        server.sendto(ack, address)
+        print(f"ack seq={seq} to={address}", flush=True)
+
     try:
         handle_packet(
             packet,
@@ -260,18 +234,9 @@ def process_datagram(
             scroll_duration,
             dry_run,
             gesture_debug,
-            screen_cursor,
         )
     except Exception as exc:
         print(f"Mouse action failed for seq={seq}: {exc}", flush=True)
-    else:
-        if screen_cursor is not None and (delta_x or delta_y):
-            print(f"movement applied: {screen_cursor.position_text()}", flush=True)
-
-    if requires_ack and seq is not None:
-        ack = json.dumps({"ack": seq}).encode("utf-8")
-        server.sendto(ack, address)
-        print(f"ack seq={seq} to={address}", flush=True)
 
 
 if __name__ == "__main__":
