@@ -56,6 +56,9 @@ class MotionProcessor(
     private var lastScrollAccelNanos = 0L
     private var scrollPeakSignedY = 0f
     private var scrollImpulseSignedY = 0f
+    private var scrollNeutralSinceNanos = 0L
+    private var oppositeScrollBlockedUntilNanos = 0L
+    private var lastScrollDirection = 0
     private var activeGestureSettle = ActiveGestureSettle.NONE
     private var gestureSettleMaxUntilNanos = 0L
     private var gestureStableSinceNanos = 0L
@@ -96,6 +99,9 @@ class MotionProcessor(
         lastScrollAccelNanos = 0L
         scrollPeakSignedY = 0f
         scrollImpulseSignedY = 0f
+        scrollNeutralSinceNanos = 0L
+        oppositeScrollBlockedUntilNanos = 0L
+        lastScrollDirection = 0
         activeGestureSettle = ActiveGestureSettle.NONE
         gestureSettleMaxUntilNanos = 0L
         gestureStableSinceNanos = 0L
@@ -196,6 +202,13 @@ class MotionProcessor(
 
         scrollImpulseSignedY = scrollImpulseSignedY * decay + signedY * dt
         lastScrollAccelNanos = nowNanos
+    }
+
+    private fun clearScrollWindow() {
+        scrollPeakSignedY = 0f
+        scrollImpulseSignedY = 0f
+        lastScrollAccelNanos = 0L
+        scrollNeutralSinceNanos = 0L
     }
 
     private fun computeMovement(
@@ -398,6 +411,10 @@ class MotionProcessor(
         activeGestureSettle = ActiveGestureSettle.NONE
         gestureStableSinceNanos = 0L
         updateIdleBaseline()
+        if (kind == ActiveGestureSettle.SCROLL) {
+            clearScrollWindow()
+            scrollArmed = false
+        }
         return GestureState(null, true, "${kind.name.lowercase(Locale.US)} settle release", "${kind.name.lowercase(Locale.US)}SettleRelease")
     }
 
@@ -489,12 +506,20 @@ class MotionProcessor(
         val scrollMagnitude = abs(scrollSignal)
         val scrollPeakMagnitude = abs(scrollPeakSignedY)
         val scrollImpulseMagnitude = abs(scrollImpulseSignedY)
+        val strongestScrollSignal = strongestScrollSignal(scrollSignal)
+        val strongestScrollDirection = directionSign(strongestScrollSignal)
+        val oppositeReturnBlocked = strongestScrollDirection != 0 &&
+                lastScrollDirection != 0 &&
+                strongestScrollDirection == -lastScrollDirection &&
+                nowNanos < oppositeScrollBlockedUntilNanos
         val scrollCandidate = scrollArmed &&
+                !oppositeReturnBlocked &&
                 yAccelDominant &&
                 (exceedsDirectionalThreshold(scrollSignal, SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD, SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD) ||
                         exceedsDirectionalThreshold(scrollPeakSignedY, SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD, SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD) ||
                         exceedsDirectionalThreshold(scrollImpulseSignedY, SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD, SCROLL_DOWN_CANDIDATE_IMPULSE_THRESHOLD))
         val scrollTrigger = scrollArmed &&
+                !oppositeReturnBlocked &&
                 yAccelDominant &&
                 !heavyRotation &&
                 (exceedsDirectionalThreshold(scrollSignal, SCROLL_UP_ACCEL_THRESHOLD, SCROLL_DOWN_ACCEL_THRESHOLD) ||
@@ -502,11 +527,17 @@ class MotionProcessor(
                         exceedsDirectionalThreshold(scrollImpulseSignedY, SCROLL_UP_IMPULSE_THRESHOLD, SCROLL_DOWN_IMPULSE_THRESHOLD))
         val scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
 
-        if (scrollMagnitude < SCROLL_REARM_ACCEL_THRESHOLD &&
-            scrollPeakMagnitude < SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD &&
-            scrollImpulseMagnitude < SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD
-        ) {
-            scrollArmed = true
+        val neutralNow = scrollMagnitude < SCROLL_REARM_ACCEL_THRESHOLD &&
+                scrollPeakMagnitude < SCROLL_REARM_PEAK_THRESHOLD &&
+                scrollImpulseMagnitude < SCROLL_REARM_IMPULSE_THRESHOLD
+        if (neutralNow) {
+            if (scrollNeutralSinceNanos <= 0L) scrollNeutralSinceNanos = nowNanos
+            if (nowNanos - scrollNeutralSinceNanos >= SCROLL_REARM_STABLE_NANOS) {
+                scrollArmed = true
+                lastScrollDirection = 0
+            }
+        } else {
+            scrollNeutralSinceNanos = 0L
         }
 
         if (scrollFreezeRemainingMs > 0f) {
@@ -535,8 +566,12 @@ class MotionProcessor(
                 SCROLL_MAX_SETTLE_NANOS
             )
             scrollArmed = false
-            val scrollDirectionSignal = strongestScrollSignal(scrollSignal)
-            val gesture = if (scrollDirectionSignal > 0f) GestureKind.SCROLL_UP else GestureKind.SCROLL_DOWN
+            val scrollDirectionSignal = strongestScrollSignal
+            val direction = directionSign(scrollDirectionSignal)
+            lastScrollDirection = direction
+            oppositeScrollBlockedUntilNanos = nowNanos + OPPOSITE_SCROLL_BLOCK_NANOS
+            clearScrollWindow()
+            val gesture = if (direction > 0) GestureKind.SCROLL_UP else GestureKind.SCROLL_DOWN
             lastGestureDebug = gestureDebug(
                 mode = "scrollFreeze",
                 clickSignValue = clickSignValue,
@@ -561,7 +596,7 @@ class MotionProcessor(
                 clickAllowed = clickAllowed,
                 scrollCandidate = true,
                 scrollAllowed = scrollAllowed,
-                scrollBlockedReason = scrollBlockedReason(scrollAllowed, yAccelDominant, heavyRotation),
+                scrollBlockedReason = scrollBlockedReason(scrollAllowed, yAccelDominant, heavyRotation, oppositeReturnBlocked),
                 clickFreezeRemainingMs = 0f,
                 scrollFreezeRemainingMs = 0f,
                 yAccelDominant = yAccelDominant,
@@ -578,7 +613,7 @@ class MotionProcessor(
             clickAllowed = clickAllowed,
             scrollCandidate = false,
             scrollAllowed = scrollAllowed,
-            scrollBlockedReason = scrollBlockedReason(scrollAllowed, yAccelDominant, heavyRotation),
+            scrollBlockedReason = scrollBlockedReason(scrollAllowed, yAccelDominant, heavyRotation, oppositeReturnBlocked),
             clickFreezeRemainingMs = 0f,
             scrollFreezeRemainingMs = 0f,
             yAccelDominant = yAccelDominant,
@@ -605,14 +640,24 @@ class MotionProcessor(
         }
     }
 
+    private fun directionSign(value: Float): Int {
+        return when {
+            value > 0f -> 1
+            value < 0f -> -1
+            else -> 0
+        }
+    }
+
     private fun scrollBlockedReason(
         scrollAllowed: Boolean,
         yAccelDominant: Boolean,
-        heavyRotation: Boolean
+        heavyRotation: Boolean,
+        oppositeReturnBlocked: Boolean
     ): String {
         return when {
             !scrollAllowed -> "cooldown/mutex"
             !scrollArmed -> "not rearmed"
+            oppositeReturnBlocked -> "opposite return blocked"
             !yAccelDominant -> "Y not dominant"
             heavyRotation -> "heavy rotation"
             else -> "below threshold"
@@ -635,7 +680,7 @@ class MotionProcessor(
         return String.format(
             Locale.US,
             "Gesture mode=%s cursorFrozenForClick=%s clickCandidate=%s clickY raw %.3f signed %.3f threshold %.2f candidate %.2f allowed=%s clickFreezeRemainingMs %.0f\n" +
-                    "Scroll candidate=%s linearY raw %.3f signed %.3f peakY %.3f impulseY %.3f upThresholds %.2f/%.2f/%.2f downThresholds %.2f/%.2f/%.2f armed=%s allowed=%s dom=%s heavyRotation=%s scrollFreezeRemainingMs %.0f scrollBlockedReason=%s\n%s",
+                    "Scroll candidate=%s linearY raw %.3f signed %.3f peakY %.3f impulseY %.3f upThresholds %.2f/%.2f/%.2f downThresholds %.2f/%.2f/%.2f armed=%s lastDir=%d oppositeBlockMs %.0f allowed=%s dom=%s heavyRotation=%s scrollFreezeRemainingMs %.0f scrollBlockedReason=%s\n%s",
             mode,
             mode.startsWith("click"),
             clickCandidate,
@@ -657,6 +702,8 @@ class MotionProcessor(
             SCROLL_DOWN_PEAK_THRESHOLD,
             SCROLL_DOWN_IMPULSE_THRESHOLD,
             scrollArmed,
+            lastScrollDirection,
+            remainingMs(oppositeScrollBlockedUntilNanos, System.nanoTime()),
             scrollAllowed,
             yAccelDominant,
             heavyRotation,
@@ -802,6 +849,10 @@ class MotionProcessor(
         private const val SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD = 1.15f
         private const val SCROLL_DOWN_CANDIDATE_IMPULSE_THRESHOLD = 0.07f
         private const val SCROLL_REARM_ACCEL_THRESHOLD = 0.65f
+        private const val SCROLL_REARM_PEAK_THRESHOLD = 0.85f
+        private const val SCROLL_REARM_IMPULSE_THRESHOLD = 0.04f
+        private const val SCROLL_REARM_STABLE_NANOS = 130_000_000L
+        private const val OPPOSITE_SCROLL_BLOCK_NANOS = 1_100_000_000L
         private const val SCROLL_WINDOW_NANOS = 140_000_000L
         private const val SCROLL_FREEZE_NANOS = 240_000_000L
         private const val SCROLL_MAX_SETTLE_NANOS = 750_000_000L
