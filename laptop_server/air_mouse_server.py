@@ -49,6 +49,25 @@ def as_int(packet: Dict[str, Any], key: str) -> int:
         return 0
 
 
+def local_ipv4_candidates() -> list[str]:
+    addresses = set()
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            addresses.add(info[4][0])
+    except OSError:
+        pass
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 80))
+            addresses.add(probe.getsockname()[0])
+    except OSError:
+        pass
+
+    return sorted(address for address in addresses if not address.startswith("127."))
+
+
 def handle_packet(
     packet: Dict[str, Any],
     pyautogui,
@@ -69,13 +88,13 @@ def handle_packet(
         pyautogui.moveRel(delta_x, delta_y, duration=0)
     if click:
         if gesture_dry_run:
-            print("gesture-dry-run: LEFT CLICK detected, not applying to PC")
+            print("gesture-dry-run: LEFT CLICK detected, not applying to PC", flush=True)
         else:
             pyautogui.click(button="left")
     if scroll:
         if gesture_dry_run:
             direction = "UP" if scroll > 0 else "DOWN"
-            print(f"gesture-dry-run: SCROLL {direction} packet={scroll}, not applying to PC")
+            print(f"gesture-dry-run: SCROLL {direction} packet={scroll}, not applying to PC", flush=True)
         else:
             pyautogui.scroll(scroll * scroll_scale)
 
@@ -100,8 +119,17 @@ def main() -> int:
 
         print(
             f"AirMouse UDP server listening on {args.host}:{args.port} "
-            f"dry_run={args.dry_run} debug={gesture_debug}"
+            f"dry_run={args.dry_run} debug={gesture_debug}",
+            flush=True,
         )
+        candidates = local_ipv4_candidates()
+        if candidates:
+            print(
+                "Use one of these PC IPv4 addresses in the Android app: "
+                + ", ".join(candidates),
+                flush=True,
+            )
+        print("Waiting for Android packets. Press Ctrl+C to stop.", flush=True)
 
         try:
             while True:
@@ -121,7 +149,7 @@ def main() -> int:
                     gesture_debug,
                 )
         except KeyboardInterrupt:
-            print("\nAirMouse UDP server stopped.")
+            print("\nAirMouse UDP server stopped.", flush=True)
             return 0
 
     return 0
@@ -143,7 +171,7 @@ def process_datagram(
         if not isinstance(packet, dict):
             raise ValueError("packet JSON is not an object")
     except Exception as exc:
-        print(f"Bad packet from {address}: {exc}")
+        print(f"Bad packet from {address}: {exc}", flush=True)
         return
 
     seq = packet.get("seq")
@@ -154,7 +182,8 @@ def process_datagram(
     requires_ack = bool(packet.get("requiresAck", False))
     print(
         f"packet seq={seq} dx={delta_x:.2f} dy={delta_y:.2f} "
-        f"click={click} scroll={scroll} ack={requires_ack} from={address}"
+        f"click={click} scroll={scroll} ack={requires_ack} from={address}",
+        flush=True,
     )
 
     try:
@@ -167,12 +196,12 @@ def process_datagram(
             gesture_debug,
         )
     except Exception as exc:
-        print(f"Mouse action failed for seq={seq}: {exc}")
+        print(f"Mouse action failed for seq={seq}: {exc}", flush=True)
 
     if requires_ack and seq is not None:
         ack = json.dumps({"ack": seq}).encode("utf-8")
         server.sendto(ack, address)
-        print(f"ack seq={seq} to={address}")
+        print(f"ack seq={seq} to={address}", flush=True)
 
 
 if __name__ == "__main__":

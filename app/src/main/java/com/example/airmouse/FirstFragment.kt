@@ -171,9 +171,25 @@ class FirstFragment : Fragment(), SensorEventListener {
             return
         }
 
+        sendStartupUdpProbe()
         startReadingSensors()
         binding.startButton.text = "STOP MOUSE"
         binding.statusText.text = "Status: AirMouse running"
+    }
+
+    private fun sendStartupUdpProbe() {
+        val packet = MousePacket(
+            sequenceNumber = packetSequenceNumber++,
+            timestamp = System.currentTimeMillis(),
+            sensorTimestampNanos = System.nanoTime(),
+            deltaX = 0f,
+            deltaY = 0f,
+            click = false,
+            scroll = 0,
+            requiresAck = false
+        )
+        lastPacketSummary = "startup UDP probe: ${packet.toJsonString()}"
+        udpClient?.send(packet)
     }
 
     private fun stopAirMouse() {
