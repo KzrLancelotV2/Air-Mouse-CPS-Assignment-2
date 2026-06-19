@@ -59,6 +59,8 @@ class FirstFragment : Fragment(), SensorEventListener {
     private var lastUiUpdateMs = 0L
     private var lastPacketSummary = "none"
     private var udpStatus = UdpStatus(false, "stopped", "none", null, 0, null)
+    private var previewX = 0f
+    private var previewY = 0f
 
     private val sensorSamples = ArrayDeque<SensorSample>()
     private val maxSamples = 1000
@@ -158,6 +160,7 @@ class FirstFragment : Fragment(), SensorEventListener {
 
         userWantsMouseRunning = true
         motionProcessor.reset()
+        resetMovementPreview()
         sensorExecutor?.shutdownNow()
         sensorExecutor = Executors.newSingleThreadExecutor()
 
@@ -182,6 +185,7 @@ class FirstFragment : Fragment(), SensorEventListener {
         binding.statusText.text = "Status: stopped"
         binding.clickStatusText.text = "Click: not detected"
         binding.scrollStatusText.text = "Scroll: not detected"
+        resetMovementPreview()
         updateDebugInfo()
     }
 
@@ -265,9 +269,10 @@ class FirstFragment : Fragment(), SensorEventListener {
 
         binding.movementLabelText.text = String.format(
             Locale.US,
-            "Movement Debug Preview: packet deltaX %.2f, deltaY %.2f\nThis square is only a phone-side preview. Real cursor movement happens on the laptop through UDP.",
+            "Movement Debug Preview: final deltaX %.2f, deltaY %.2f\n%s\nThis square accumulates the same signed deltas used for movement packets. Real cursor movement happens on the laptop through UDP.",
             output.deltaX,
-            output.deltaY
+            output.deltaY,
+            output.debugDetails
         )
 
         updateCalibrationStatus(output.status, output.filterMode.name)
@@ -281,8 +286,19 @@ class FirstFragment : Fragment(), SensorEventListener {
                 .coerceAtLeast(0f)
             val maxY = ((currentBinding.movementArea.height - currentBinding.movementSquare.height) / 2f)
                 .coerceAtLeast(0f)
-            currentBinding.movementSquare.translationX = (deltaX * PREVIEW_SCALE).coerceIn(-maxX, maxX)
-            currentBinding.movementSquare.translationY = (deltaY * PREVIEW_SCALE).coerceIn(-maxY, maxY)
+            previewX = (previewX + deltaX * PREVIEW_SCALE).coerceIn(-maxX, maxX)
+            previewY = (previewY + deltaY * PREVIEW_SCALE).coerceIn(-maxY, maxY)
+            currentBinding.movementSquare.translationX = previewX
+            currentBinding.movementSquare.translationY = previewY
+        }
+    }
+
+    private fun resetMovementPreview() {
+        previewX = 0f
+        previewY = 0f
+        if (_binding != null) {
+            binding.movementSquare.translationX = 0f
+            binding.movementSquare.translationY = 0f
         }
     }
 
@@ -346,7 +362,7 @@ class FirstFragment : Fragment(), SensorEventListener {
         filterMode: String = "MADGWICK"
     ) {
         val gyro = if (CalibrationStore.gyroBias != null) "gyro calibrated" else "gyro not calibrated"
-        val accel = if (CalibrationStore.accelOffset != null && CalibrationStore.accelScale != null) {
+        val accel = if (CalibrationStore.hasValidAccelerometerCalibration()) {
             "accel calibrated"
         } else {
             "accel incomplete"
@@ -432,7 +448,7 @@ class FirstFragment : Fragment(), SensorEventListener {
     companion object {
         private const val DEFAULT_UDP_PORT = 5000
         private const val PREVIEW_SCALE = 4.0f
-        private const val UI_UPDATE_INTERVAL_MS = 80L
+        private const val UI_UPDATE_INTERVAL_MS = 33L
         private const val GESTURE_FEEDBACK_MS = 700L
         private const val MAX_DEBUG_PACKET_CHARS = 220
     }

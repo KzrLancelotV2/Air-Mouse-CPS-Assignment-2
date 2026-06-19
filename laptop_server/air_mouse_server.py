@@ -10,6 +10,7 @@ def load_pyautogui(dry_run: bool):
     import pyautogui
 
     pyautogui.FAILSAFE = True
+    pyautogui.PAUSE = 0
     return pyautogui
 
 

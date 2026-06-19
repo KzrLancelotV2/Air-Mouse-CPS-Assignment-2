@@ -24,11 +24,29 @@ object CalibrationStore {
     val accelSixPositions = mutableListOf<FloatArray>()
     var accelOffset: FloatArray? = null
     var accelScale: FloatArray? = null
+    var accelLastValidationError: String? = null
 
     var magMin = FloatArray(3) { Float.POSITIVE_INFINITY }
     var magMax = FloatArray(3) { Float.NEGATIVE_INFINITY }
     var magOffset: FloatArray? = null
     var magScale: FloatArray? = null
+
+    fun resetAccelerometer() {
+        accelSixPositions.clear()
+        accelOffset = null
+        accelScale = null
+        accelLastValidationError = null
+    }
+
+    fun hasValidAccelerometerCalibration(): Boolean {
+        val offset = accelOffset
+        val scale = accelScale
+        return offset != null &&
+                scale != null &&
+                offset.size >= 3 &&
+                scale.size >= 3 &&
+                scale.all { it.isFinite() && abs(it) >= 0.5f }
+    }
 
     fun resetMagnetometer() {
         magMin = FloatArray(3) { Float.POSITIVE_INFINITY }
@@ -105,6 +123,7 @@ class SecondFragment : Fragment(), SensorEventListener {
         }
 
         updateInstructionText()
+        updateAccelerometerUiFromState()
     }
 
     private fun updateInstructionText() {
@@ -124,10 +143,10 @@ class SecondFragment : Fragment(), SensorEventListener {
         }
     }
 
-    private fun computeAccelerometerCalibrationIfReady() {
+    private fun computeAccelerometerCalibrationIfReady(): Boolean {
         val positions = CalibrationStore.accelSixPositions
 
-        if (positions.size < 6) return
+        if (positions.size < 6) return false
 
         val minValues = FloatArray(3) { Float.POSITIVE_INFINITY }
         val maxValues = FloatArray(3) { Float.NEGATIVE_INFINITY }
@@ -148,15 +167,27 @@ class SecondFragment : Fragment(), SensorEventListener {
         val scaleZ = (maxValues[2] - minValues[2]) / 2f
 
         if (listOf(scaleX, scaleY, scaleZ).any { !it.isFinite() || abs(it) < 0.5f }) {
+            CalibrationStore.accelOffset = null
+            CalibrationStore.accelScale = null
+            CalibrationStore.accelLastValidationError =
+                "One or more axes did not show a clear +/- gravity range."
             binding.accelResultText.text =
-                "Accelerometer calibration invalid. Re-capture six orientations with clear +/- gravity on each axis."
+                buildAccelerometerDebugText(
+                    minValues,
+                    maxValues,
+                    floatArrayOf(offsetX, offsetY, offsetZ),
+                    floatArrayOf(scaleX, scaleY, scaleZ),
+                    "Accelerometer calibration invalid. Please retry all six positions. Keep the phone still for each sample."
+                )
             binding.calibrationStatusText.text =
-                "Status: accelerometer calibration failed because one axis range was too small."
-            return
+                "Status: accelerometer calibration invalid. Press retry to clear these samples and start from position 1."
+            binding.accelCaptureButton.text = "Retry Accelerometer 6 Positions"
+            return false
         }
 
         CalibrationStore.accelOffset = floatArrayOf(offsetX, offsetY, offsetZ)
         CalibrationStore.accelScale = floatArrayOf(scaleX, scaleY, scaleZ)
+        CalibrationStore.accelLastValidationError = null
 
         binding.accelResultText.text =
             String.format(
@@ -176,6 +207,9 @@ class SecondFragment : Fragment(), SensorEventListener {
 
         binding.calibrationStatusText.text =
             "Status: accelerometer calibration completed."
+        binding.accelCaptureButton.text =
+            "2. Accelerometer 6 Positions Completed"
+        return true
     }
 
     private fun startSensors() {
@@ -219,6 +253,17 @@ class SecondFragment : Fragment(), SensorEventListener {
     }
 
     private fun saveAccelerometerPosition() {
+        if (CalibrationStore.accelSixPositions.size >= 6 &&
+            !CalibrationStore.hasValidAccelerometerCalibration()
+        ) {
+            CalibrationStore.resetAccelerometer()
+            binding.accelCaptureButton.text = "2. Save Accelerometer Position 1/6"
+            binding.accelResultText.text = "Accelerometer positions saved: 0/6"
+            binding.calibrationStatusText.text =
+                "Status: cleared invalid accelerometer samples. Capture position 1/6."
+            return
+        }
+
         val currentAccel = latestAccel
 
         if (currentAccel == null) {
@@ -229,7 +274,11 @@ class SecondFragment : Fragment(), SensorEventListener {
 
         if (CalibrationStore.accelSixPositions.size >= 6) {
             binding.calibrationStatusText.text =
-                "Status: already saved 6 accelerometer positions."
+                if (CalibrationStore.hasValidAccelerometerCalibration()) {
+                    "Status: accelerometer calibration already completed."
+                } else {
+                    "Status: accelerometer calibration invalid. Press retry to restart."
+                }
             return
         }
 
@@ -243,15 +292,94 @@ class SecondFragment : Fragment(), SensorEventListener {
         if (count < 6) {
             binding.accelCaptureButton.text =
                 "2. Save Accelerometer Position ${count + 1}/6"
+            binding.calibrationStatusText.text =
+                "Status: saved accelerometer position $count."
         } else {
-            binding.accelCaptureButton.text =
-                "2. Accelerometer 6 Positions Completed"
-
-            computeAccelerometerCalibrationIfReady()
+            val valid = computeAccelerometerCalibrationIfReady()
+            if (!valid) return
         }
+    }
 
-        binding.calibrationStatusText.text =
-            "Status: saved accelerometer position $count."
+    private fun updateAccelerometerUiFromState() {
+        val count = CalibrationStore.accelSixPositions.size
+        when {
+            CalibrationStore.hasValidAccelerometerCalibration() -> {
+                binding.accelCaptureButton.text = "2. Accelerometer 6 Positions Completed"
+                val offset = CalibrationStore.accelOffset!!
+                val scale = CalibrationStore.accelScale!!
+                binding.accelResultText.text =
+                    String.format(
+                        Locale.US,
+                        "Accelerometer calibration completed:\n" +
+                                "Captured samples: %d/6\n" +
+                                "Offset X %.3f  Y %.3f  Z %.3f\n" +
+                                "Half-range scale X %.3f  Y %.3f  Z %.3f",
+                        count,
+                        offset[0],
+                        offset[1],
+                        offset[2],
+                        scale[0],
+                        scale[1],
+                        scale[2]
+                    )
+            }
+            count >= 6 -> {
+                binding.accelCaptureButton.text = "Retry Accelerometer 6 Positions"
+                binding.accelResultText.text =
+                    "Accelerometer calibration invalid. Please retry all six positions. Keep the phone still for each sample.\n" +
+                            "Captured samples: $count/6\n" +
+                            "Reason: ${CalibrationStore.accelLastValidationError ?: "invalid calibration result"}"
+            }
+            else -> {
+                binding.accelCaptureButton.text = "2. Save Accelerometer Position ${count + 1}/6"
+                binding.accelResultText.text = "Accelerometer positions saved: $count/6"
+            }
+        }
+    }
+
+    private fun buildAccelerometerDebugText(
+        minValues: FloatArray,
+        maxValues: FloatArray,
+        offsets: FloatArray,
+        scales: FloatArray,
+        message: String
+    ): String {
+        val samples = CalibrationStore.accelSixPositions.mapIndexed { index, sample ->
+            String.format(
+                Locale.US,
+                "%d: X %.3f  Y %.3f  Z %.3f",
+                index + 1,
+                sample[0],
+                sample[1],
+                sample[2]
+            )
+        }.joinToString(separator = "\n")
+
+        return String.format(
+            Locale.US,
+            "%s\nCaptured samples: %d/6\n%s\n" +
+                    "Min X %.3f  Y %.3f  Z %.3f\n" +
+                    "Max X %.3f  Y %.3f  Z %.3f\n" +
+                    "Computed offset X %.3f  Y %.3f  Z %.3f\n" +
+                    "Computed half-range scale X %.3f  Y %.3f  Z %.3f\n" +
+                    "Reason: %s",
+            message,
+            CalibrationStore.accelSixPositions.size,
+            samples,
+            minValues[0],
+            minValues[1],
+            minValues[2],
+            maxValues[0],
+            maxValues[1],
+            maxValues[2],
+            offsets[0],
+            offsets[1],
+            offsets[2],
+            scales[0],
+            scales[1],
+            scales[2],
+            CalibrationStore.accelLastValidationError ?: "invalid calibration result"
+        )
     }
     private fun computeMagnetometerCalibration() {
         val minValues = CalibrationStore.magMin
