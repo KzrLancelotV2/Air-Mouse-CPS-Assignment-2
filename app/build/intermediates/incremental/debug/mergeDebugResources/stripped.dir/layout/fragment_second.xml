@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Calibration"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/calibrationInstructionText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Use this page to collect raw sensor data for calibration."
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/calibrationStatusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="Status: waiting"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/gyroCalibrateButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="1. Collect Gyroscope Bias Samples" />
+
+        <TextView
+            android:id="@+id/gyroResultText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Gyro bias: not collected yet" />
+
+        <Button
+            android:id="@+id/accelCaptureButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="2. Save Accelerometer Position 1/6" />
+
+        <TextView
+            android:id="@+id/accelResultText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Accelerometer positions saved: 0/6" />
+
+        <Button
+            android:id="@+id/magStartButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="3. Start Magnetometer Figure-8 Capture" />
+
+        <TextView
+            android:id="@+id/magResultText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Magnetometer min/max: not collected yet" />
+
+        <Button
+            android:id="@+id/backButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="28dp"
+            android:text="Back to Main Screen" />
+
+    </LinearLayout>
+
+</ScrollView>
