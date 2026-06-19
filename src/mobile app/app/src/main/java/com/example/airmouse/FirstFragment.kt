@@ -10,7 +10,6 @@ import android.hardware.SensorManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.Trace
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -29,6 +28,7 @@ import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import kotlin.math.roundToLong
 
 data class SensorSample(
     val timestamp: Long,
@@ -59,6 +59,11 @@ class FirstFragment : Fragment(), SensorEventListener {
     private var lastUiUpdateMs = 0L
     private var lastPacketSummary = "none"
     private var udpStatus = UdpStatus(false, "stopped", "none", null, 0, null)
+    private var previewX = 0f
+    private var previewY = 0f
+    private var lastAccelSensorTimestampNanos = 0L
+    private var lastGyroSensorTimestampNanos = 0L
+    private var lastMagSensorTimestampNanos = 0L
 
     private val sensorSamples = ArrayDeque<SensorSample>()
     private val maxSamples = 1000
@@ -158,8 +163,11 @@ class FirstFragment : Fragment(), SensorEventListener {
 
         userWantsMouseRunning = true
         motionProcessor.reset()
+        resetMovementPreview()
         sensorExecutor?.shutdownNow()
-        sensorExecutor = Executors.newSingleThreadExecutor()
+        sensorExecutor = Executors.newSingleThreadExecutor(
+            TraceUtils.namedThreadFactory("AirMouse-SensorProc")
+        )
 
         if (udpClient?.start(host, DEFAULT_UDP_PORT) != true) {
             binding.statusText.text = "Status: UDP could not start. Check laptop IP."
@@ -168,9 +176,25 @@ class FirstFragment : Fragment(), SensorEventListener {
             return
         }
 
+        sendStartupUdpProbe()
         startReadingSensors()
         binding.startButton.text = "STOP MOUSE"
         binding.statusText.text = "Status: AirMouse running"
+    }
+
+    private fun sendStartupUdpProbe() {
+        val packet = MousePacket(
+            sequenceNumber = packetSequenceNumber++,
+            timestamp = System.currentTimeMillis(),
+            sensorTimestampNanos = System.nanoTime(),
+            deltaX = 0f,
+            deltaY = 0f,
+            click = false,
+            scroll = 0,
+            requiresAck = false
+        )
+        lastPacketSummary = "startup UDP probe: ${packet.toJsonString()}"
+        udpClient?.send(packet)
     }
 
     private fun stopAirMouse() {
@@ -182,6 +206,7 @@ class FirstFragment : Fragment(), SensorEventListener {
         binding.statusText.text = "Status: stopped"
         binding.clickStatusText.text = "Click: not detected"
         binding.scrollStatusText.text = "Scroll: not detected"
+        resetMovementPreview()
         updateDebugInfo()
     }
 
@@ -208,24 +233,50 @@ class FirstFragment : Fragment(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        Trace.beginSection("AirMouse_SensorEvent")
-        try {
-            if (event == null || !isReadingSensors || !gyroSupported) return
-            val values = FloatArray(minOf(3, event.values.size))
-            for (i in values.indices) values[i] = event.values[i]
-            val frame = SensorFrame(event.sensor.type, event.timestamp, values)
-            storeSample(event.sensor.type, values)
-            sensorExecutor?.execute {
-                val output = motionProcessor.onFrame(frame) ?: return@execute
-                output.packet?.let {
-                    lastPacketSummary = it.toJsonString()
-                    udpClient?.send(it)
-                }
-                maybePostMotionOutput(output)
+        if (event == null || !isReadingSensors || !gyroSupported) return
+
+        val frame = TraceUtils.section("AirMouse_SensorEvent_Copy") {
+            TraceUtils.section("AirMouse_SensorEvent_${TraceUtils.sensorName(event.sensor.type)}") {
+                val values = FloatArray(minOf(3, event.values.size))
+                for (i in values.indices) values[i] = event.values[i]
+                SensorFrame(event.sensor.type, event.timestamp, values)
             }
-        } finally {
-            Trace.endSection()
         }
+        recordSensorIntervalCounter(frame.sensorType, frame.timestampNanos)
+        storeSample(frame.sensorType, frame.values)
+        sensorExecutor?.execute {
+            val output = motionProcessor.onFrame(frame) ?: return@execute
+            TraceUtils.counter("AirMouse_FinalDeltaX", (output.deltaX * 1000f).roundToLong())
+            TraceUtils.counter("AirMouse_FinalDeltaY", (output.deltaY * 1000f).roundToLong())
+            output.packet?.let {
+                TraceUtils.counter("AirMouse_MotionPacketSeq", it.sequenceNumber)
+                lastPacketSummary = it.toJsonString()
+                udpClient?.send(it)
+            }
+            maybePostMotionOutput(output)
+        }
+    }
+
+    private fun recordSensorIntervalCounter(sensorType: Int, timestampNanos: Long) {
+        when (sensorType) {
+            Sensor.TYPE_ACCELEROMETER, Sensor.TYPE_ACCELEROMETER_UNCALIBRATED -> {
+                emitDtCounter("AirMouse_AccelDtMs", lastAccelSensorTimestampNanos, timestampNanos)
+                lastAccelSensorTimestampNanos = timestampNanos
+            }
+            Sensor.TYPE_GYROSCOPE, Sensor.TYPE_GYROSCOPE_UNCALIBRATED -> {
+                emitDtCounter("AirMouse_GyroDtMs", lastGyroSensorTimestampNanos, timestampNanos)
+                lastGyroSensorTimestampNanos = timestampNanos
+            }
+            Sensor.TYPE_MAGNETIC_FIELD, Sensor.TYPE_MAGNETIC_FIELD_UNCALIBRATED -> {
+                emitDtCounter("AirMouse_MagDtMs", lastMagSensorTimestampNanos, timestampNanos)
+                lastMagSensorTimestampNanos = timestampNanos
+            }
+        }
+    }
+
+    private fun emitDtCounter(name: String, previousNanos: Long, currentNanos: Long) {
+        if (previousNanos <= 0L || currentNanos <= previousNanos) return
+        TraceUtils.counter(name, (currentNanos - previousNanos) / 1_000_000L)
     }
 
     private fun storeSample(sensorType: Int, values: FloatArray) {
@@ -253,36 +304,52 @@ class FirstFragment : Fragment(), SensorEventListener {
     }
 
     private fun updateMotionUi(output: MotionOutput) {
-        binding.accelText.text =
-            "Raw ${formatVec(output.rawAccel)}\nCorrected ${formatVec(output.correctedAccel)}\nLinear ${formatVec(output.linearAccel)}"
-        binding.gyroText.text =
-            "Raw ${formatVec(output.rawGyro)}\nCorrected/filter ${formatVec(output.correctedGyro)}"
-        binding.magText.text =
-            "Raw ${formatVec(output.rawMag)}\nCorrected ${formatVec(output.correctedMag)}"
+        TraceUtils.section("AirMouse_UI_StatusUpdate") {
+            binding.accelText.text =
+                "Raw ${formatVec(output.rawAccel)}\nCorrected ${formatVec(output.correctedAccel)}\nLinear ${formatVec(output.linearAccel)}"
+            binding.gyroText.text =
+                "Raw ${formatVec(output.rawGyro)}\nCorrected/filter ${formatVec(output.correctedGyro)}"
+            binding.magText.text =
+                "Raw ${formatVec(output.rawMag)}\nCorrected ${formatVec(output.correctedMag)}"
 
+            handleGestureUi(output)
+
+            binding.movementLabelText.text = String.format(
+                Locale.US,
+                "Movement Debug Preview: final deltaX %.2f, deltaY %.2f\n%s\nThis square accumulates the same signed deltas used for movement packets. Real cursor movement happens on the laptop through UDP.",
+                output.deltaX,
+                output.deltaY,
+                output.debugDetails
+            )
+
+            updateCalibrationStatus(output.status, output.filterMode.name)
+            updateDebugInfo()
+        }
         updateMovementIndicator(output.deltaX, output.deltaY)
-        handleGestureUi(output)
-
-        binding.movementLabelText.text = String.format(
-            Locale.US,
-            "Movement Debug Preview: packet deltaX %.2f, deltaY %.2f\nThis square is only a phone-side preview. Real cursor movement happens on the laptop through UDP.",
-            output.deltaX,
-            output.deltaY
-        )
-
-        updateCalibrationStatus(output.status, output.filterMode.name)
-        updateDebugInfo()
     }
 
     private fun updateMovementIndicator(deltaX: Float, deltaY: Float) {
         val currentBinding = _binding ?: return
         currentBinding.movementArea.post {
-            val maxX = ((currentBinding.movementArea.width - currentBinding.movementSquare.width) / 2f)
-                .coerceAtLeast(0f)
-            val maxY = ((currentBinding.movementArea.height - currentBinding.movementSquare.height) / 2f)
-                .coerceAtLeast(0f)
-            currentBinding.movementSquare.translationX = (deltaX * PREVIEW_SCALE).coerceIn(-maxX, maxX)
-            currentBinding.movementSquare.translationY = (deltaY * PREVIEW_SCALE).coerceIn(-maxY, maxY)
+            TraceUtils.section("AirMouse_UI_PreviewUpdate") {
+                val maxX = ((currentBinding.movementArea.width - currentBinding.movementSquare.width) / 2f)
+                    .coerceAtLeast(0f)
+                val maxY = ((currentBinding.movementArea.height - currentBinding.movementSquare.height) / 2f)
+                    .coerceAtLeast(0f)
+                previewX = (previewX + deltaX * PREVIEW_SCALE).coerceIn(-maxX, maxX)
+                previewY = (previewY + deltaY * PREVIEW_SCALE).coerceIn(-maxY, maxY)
+                currentBinding.movementSquare.translationX = previewX
+                currentBinding.movementSquare.translationY = previewY
+            }
+        }
+    }
+
+    private fun resetMovementPreview() {
+        previewX = 0f
+        previewY = 0f
+        if (_binding != null) {
+            binding.movementSquare.translationX = 0f
+            binding.movementSquare.translationY = 0f
         }
     }
 
@@ -345,33 +412,37 @@ class FirstFragment : Fragment(), SensorEventListener {
         processorStatus: String = "",
         filterMode: String = "MADGWICK"
     ) {
-        val gyro = if (CalibrationStore.gyroBias != null) "gyro calibrated" else "gyro not calibrated"
-        val accel = if (CalibrationStore.accelOffset != null && CalibrationStore.accelScale != null) {
-            "accel calibrated"
-        } else {
-            "accel incomplete"
+        TraceUtils.section("AirMouse_UI_StatusUpdate") {
+            val gyro = if (CalibrationStore.gyroBias != null) "gyro calibrated" else "gyro not calibrated"
+            val accel = if (CalibrationStore.hasValidAccelerometerCalibration()) {
+                "accel calibrated"
+            } else {
+                "accel incomplete"
+            }
+            val mag = if (CalibrationStore.magOffset != null && CalibrationStore.magScale != null) {
+                "mag calibrated"
+            } else {
+                "mag incomplete"
+            }
+            val detail = if (processorStatus.isBlank()) "" else "\n$processorStatus"
+            binding.statusText.text =
+                "Status: ${if (isReadingSensors) "AirMouse running" else "idle"} | Filter: $filterMode | $gyro, $accel, $mag$detail"
         }
-        val mag = if (CalibrationStore.magOffset != null && CalibrationStore.magScale != null) {
-            "mag calibrated"
-        } else {
-            "mag incomplete"
-        }
-        val detail = if (processorStatus.isBlank()) "" else "\n$processorStatus"
-        binding.statusText.text =
-            "Status: ${if (isReadingSensors) "AirMouse running" else "idle"} | Filter: $filterMode | $gyro, $accel, $mag$detail"
     }
 
     private fun updateDebugInfo() {
         if (_binding == null) return
-        val error = udpStatus.error?.let { "\nUDP error: $it" } ?: ""
-        binding.sampleCountText.text =
-            "Stored raw sensor samples: ${sensorSamples.size} (total $rawSampleCount)\n" +
-                    "UDP: ${if (udpStatus.running) "running" else "stopped"}\n" +
-                    "UDP target: ${udpStatus.target}\n" +
-                    "Last sent packet: ${udpStatus.lastSent.take(MAX_DEBUG_PACKET_CHARS)}\n" +
-                    "Last ACK: ${udpStatus.lastAck ?: "none"}\n" +
-                    "Pending reliable ACK packets: ${udpStatus.pendingReliableCount}\n" +
-                    "Last generated packet: ${lastPacketSummary.take(MAX_DEBUG_PACKET_CHARS)}$error"
+        TraceUtils.section("AirMouse_UI_StatusUpdate") {
+            val error = udpStatus.error?.let { "\nUDP error: $it" } ?: ""
+            binding.sampleCountText.text =
+                "Stored raw sensor samples: ${sensorSamples.size} (total $rawSampleCount)\n" +
+                        "UDP: ${if (udpStatus.running) "running" else "stopped"}\n" +
+                        "UDP target: ${udpStatus.target}\n" +
+                        "Last sent packet: ${udpStatus.lastSent.take(MAX_DEBUG_PACKET_CHARS)}\n" +
+                        "Last ACK: ${udpStatus.lastAck ?: "none"}\n" +
+                        "Pending reliable ACK packets: ${udpStatus.pendingReliableCount}\n" +
+                        "Last generated packet: ${lastPacketSummary.take(MAX_DEBUG_PACKET_CHARS)}$error"
+        }
     }
 
     private fun showUnsupportedGyroDialog() {
@@ -432,7 +503,7 @@ class FirstFragment : Fragment(), SensorEventListener {
     companion object {
         private const val DEFAULT_UDP_PORT = 5000
         private const val PREVIEW_SCALE = 4.0f
-        private const val UI_UPDATE_INTERVAL_MS = 80L
+        private const val UI_UPDATE_INTERVAL_MS = 33L
         private const val GESTURE_FEEDBACK_MS = 700L
         private const val MAX_DEBUG_PACKET_CHARS = 220
     }

@@ -1,7 +1,8 @@
 package com.example.airmouse.network
 
-import android.os.Trace
+import android.os.SystemClock
 import com.example.airmouse.MousePacket
+import com.example.airmouse.TraceUtils
 import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -43,9 +44,14 @@ class UdpMouseClient(
             newSocket.soTimeout = 100
             socket = newSocket
             running = true
-            executor = Executors.newScheduledThreadPool(2).also { exec ->
-                exec.execute { receiveLoop() }
-                exec.scheduleAtFixedRate({ retryReliablePackets() }, 150, 150, TimeUnit.MILLISECONDS)
+            executor = Executors.newScheduledThreadPool(
+                2,
+                TraceUtils.namedThreadFactory("AirMouse-Udp")
+            ).also { exec ->
+                exec.execute { TraceUtils.withThreadName("AirMouse-AckRecv") { receiveLoop() } }
+                exec.scheduleAtFixedRate({
+                    TraceUtils.withThreadName("AirMouse-Retry") { retryReliablePackets() }
+                }, 150, 150, TimeUnit.MILLISECONDS)
             }
             lastError = null
             emitStatus()
@@ -78,6 +84,7 @@ class UdpMouseClient(
                 if (oldest != null) reliablePackets.remove(oldest)
             }
             reliablePackets[packet.sequenceNumber] = PendingReliablePacket(packet)
+            TraceUtils.counter("AirMouse_PendingReliablePackets", reliablePackets.size.toLong())
         }
         executor?.execute { sendNow(packet, retry = false) }
     }
@@ -86,28 +93,33 @@ class UdpMouseClient(
     fun pendingReliableCount(): Int = reliablePackets.size
 
     private fun sendNow(packet: MousePacket, retry: Boolean) {
-        Trace.beginSection("AirMouse_UDPSend")
-        try {
-            val activeSocket = socket ?: return
-            val address = targetAddress ?: return
-            val bytes = packet.toJsonString().toByteArray(Charsets.UTF_8)
-            activeSocket.send(DatagramPacket(bytes, bytes.size, address, targetPort))
-            synchronized(this) {
-                reliablePackets[packet.sequenceNumber]?.let {
-                    it.lastSendMillis = System.currentTimeMillis()
-                    it.retries += if (retry) 1 else 0
+        TraceUtils.withThreadName("AirMouse-UdpSend") {
+            try {
+                TraceUtils.section("AirMouse_UDPSend") {
+                    val activeSocket = socket ?: return@section
+                    val address = targetAddress ?: return@section
+                    val sentElapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
+                    val json = packet.toJsonString(sentElapsedRealtimeNanos)
+                    val bytes = json.toByteArray(Charsets.UTF_8)
+                    activeSocket.send(DatagramPacket(bytes, bytes.size, address, targetPort))
+                    synchronized(this) {
+                        reliablePackets[packet.sequenceNumber]?.let {
+                            it.lastSendMillis = System.currentTimeMillis()
+                            it.retries += if (retry) 1 else 0
+                        }
+                        lastSent = json
+                        lastError = null
+                        TraceUtils.counter("AirMouse_MotionPacketSeq", packet.sequenceNumber)
+                        TraceUtils.counter("AirMouse_PendingReliablePackets", reliablePackets.size.toLong())
+                        emitStatus()
+                    }
                 }
-                lastSent = packet.toJsonString()
-                lastError = null
-                emitStatus()
+            } catch (t: Throwable) {
+                synchronized(this) {
+                    lastError = t.message ?: t.javaClass.simpleName
+                    emitStatus()
+                }
             }
-        } catch (t: Throwable) {
-            synchronized(this) {
-                lastError = t.message ?: t.javaClass.simpleName
-                emitStatus()
-            }
-        } finally {
-            Trace.endSection()
         }
     }
 
@@ -118,14 +130,17 @@ class UdpMouseClient(
                 val activeSocket = socket ?: break
                 val datagram = DatagramPacket(buffer, buffer.size)
                 activeSocket.receive(datagram)
-                val text = String(datagram.data, 0, datagram.length, Charsets.UTF_8)
-                val ack = JSONObject(text).optLong("ack", Long.MIN_VALUE)
-                if (ack != Long.MIN_VALUE) {
-                    synchronized(this) {
-                        reliablePackets.remove(ack)
-                        lastAck = ack
-                        lastError = null
-                        emitStatus()
+                TraceUtils.section("AirMouse_UDP_AckReceive") {
+                    val text = String(datagram.data, 0, datagram.length, Charsets.UTF_8)
+                    val ack = JSONObject(text).optLong("ack", Long.MIN_VALUE)
+                    if (ack != Long.MIN_VALUE) {
+                        synchronized(this) {
+                            reliablePackets.remove(ack)
+                            lastAck = ack
+                            lastError = null
+                            TraceUtils.counter("AirMouse_PendingReliablePackets", reliablePackets.size.toLong())
+                            emitStatus()
+                        }
                     }
                 }
             } catch (_: SocketTimeoutException) {
@@ -142,25 +157,28 @@ class UdpMouseClient(
     }
 
     private fun retryReliablePackets() {
-        val now = System.currentTimeMillis()
-        val toRetry = mutableListOf<MousePacket>()
-        synchronized(this) {
-            val iterator = reliablePackets.iterator()
-            while (iterator.hasNext()) {
-                val entry = iterator.next()
-                val pending = entry.value
-                if (pending.retries >= MAX_RETRIES) {
-                    iterator.remove()
-                    lastError = "Dropped reliable packet ${entry.key}: no ACK"
-                    continue
+        TraceUtils.section("AirMouse_UDP_Retry") {
+            val now = System.currentTimeMillis()
+            val toRetry = mutableListOf<MousePacket>()
+            synchronized(this) {
+                val iterator = reliablePackets.iterator()
+                while (iterator.hasNext()) {
+                    val entry = iterator.next()
+                    val pending = entry.value
+                    if (pending.retries >= MAX_RETRIES) {
+                        iterator.remove()
+                        lastError = "Dropped reliable packet ${entry.key}: no ACK"
+                        continue
+                    }
+                    if (now - pending.lastSendMillis >= RETRY_INTERVAL_MS) {
+                        toRetry.add(pending.packet)
+                    }
                 }
-                if (now - pending.lastSendMillis >= RETRY_INTERVAL_MS) {
-                    toRetry.add(pending.packet)
-                }
+                TraceUtils.counter("AirMouse_PendingReliablePackets", reliablePackets.size.toLong())
+                emitStatus()
             }
-            emitStatus()
+            toRetry.forEach { sendNow(it, retry = true) }
         }
-        toRetry.forEach { sendNow(it, retry = true) }
     }
 
     @Synchronized
