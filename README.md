@@ -155,8 +155,6 @@ If a range is too small, the magnetometer calibration is rejected and the raw va
 
 ## Sensor Calibration and Gesture Instructions
 
-### English Version
-
 #### 1. Gyroscope Calibration
 
 For gyroscope calibration:
