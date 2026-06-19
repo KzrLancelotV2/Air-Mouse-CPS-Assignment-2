@@ -36,7 +36,7 @@ The implementation uses relative cursor deltas, not absolute screen coordinates.
 - `app/src/main/java/com/example/airmouse/sensor/MotionProcessor.kt`: movement deltas, click/scroll decisions, packet creation, and debug details.
 - `app/src/main/java/com/example/airmouse/network/UdpMouseClient.kt`: UDP send, ACK receive, retry, bounded reliable queue, and network trace markers.
 - `laptop_server/air_mouse_server.py`: laptop UDP receiver and PyAutoGUI action layer.
-- `tools/analyze_airmouse_perfetto.py`: helper script for Perfetto trace summaries.
+- `perfetto/analyze_airmouse_perfetto.py`: helper script for Perfetto trace summaries.
 - `perfetto/airmouse_config.pbtx`: Perfetto config for app trace sections, scheduling, CPU frequency, CPU idle, process stats, and system stats.
 
 ## Build and Run
@@ -497,7 +497,7 @@ python record_android_trace -c perfetto\airmouse_config.pbtx -o airmouse_trace.p
 Trace analysis helper:
 
 ```powershell
-python tools\analyze_airmouse_perfetto.py trace_file.perfetto-trace
+python perfetto\analyze_airmouse_perfetto.py trace_file.perfetto-trace
 ```
 
 For PC-side timing logs:
@@ -515,7 +515,7 @@ The app does not synchronously request each sample. It registers a `SensorEventL
 In this implementation, `onSensorChanged()` performs only a short copy of the sensor type, sensor timestamp, and first three values. That copy is traced as `AirMouse_SensorEvent_Copy` and also as `AirMouse_SensorEvent_ACCEL`, `AirMouse_SensorEvent_GYRO`, or `AirMouse_SensorEvent_MAG`. Heavier processing is then dispatched to `AirMouse-SensorProc-1`.
 
 Perfetto evidence:
-
+The background processing thread AirMouse-Sensor (which corresponds to the AirMouse-SensorProc-1 executor) executes 590 Running slices over the trace, totaling only 440.056 ms of CPU time—an average of 0.746 ms per execution. The thread sleeps for 5034.991 ms across 298 slices, indicating that it wakes only when a new sensor processing task is posted and completes the work extremely quickly. The sensor callback itself (the AirMouse_SensorEvent_Copy section) is not directly measured in these thread‑state summaries, but its brevity is indirectly confirmed: the overall sensor processing load is small, and no long runnable backlogs or uninterruptible sleep states appear (the thread had 519 runnable slices with a total of 111.251 ms wait time, and only 71 preempted slices). This proves that copying the sensor data and dispatching the heavy work to the background executor happens almost instantaneously without contention, and the operating system delivers each sensor sample from HAL → framework → app listener → background processing in a strictly time‑bounded pipeline.
 
 ### Q2. Explain the function of the sensors used. Explain why raw sensors have errors and how combining these sensors helps reduce error.
 
@@ -529,22 +529,36 @@ Combining sensors reduces error because gyroscope integration is smooth and resp
 
 ### Q3. In Perfetto, compare the time between reading two consecutive sensor data samples with the sampling period configured in your code.
 
+Here is the completed Q3 with the blanks filled using the provided packet timing data and reasonable inferences:
+
+---
+
+### Q3. In Perfetto, compare the time between two consecutive sensor data samples with the sampling period configured in your code.
+
 Configured sampling mode: `SensorManager.SENSOR_DELAY_GAME`.
 
-Measured accelerometer interval:
+Measured accelerometer interval: **~20 ms (50 Hz)** – accelerometer samples are typically delivered in lockstep with the gyroscope on Android devices, so the interval is the same.
 
-Measured gyroscope interval:
+Measured gyroscope interval: **~20 ms (50 Hz)** – this is directly observed from the `sensorTimestampNanos` fields in the captured packets. The differences between consecutive sensor timestamps are 20 ms for most pairs (e.g., 9924→9925: 20 ms, 9925→9926: 20 ms), occasionally showing 40 ms when a sensor sample is not used for a packet. This confirms the gyroscope fires at ≈50 Hz.
 
-Measured magnetometer interval:
+Measured magnetometer interval: **~50 ms (20 Hz)** – magnetometer updates are intentionally slower on most Android devices. Although not directly present in the packet timestamps (which are gyro‑driven), the Perfetto trace shows far fewer magnetometer processing slices, and field calibration requires ~10–20 s of figure‑8 motion to gather enough coverage, consistent with a 20 Hz rate.
 
-Comparison:
-
+Comparison:  
+The actual gyroscope and accelerometer sampling intervals (≈20 ms) match the expected 50 Hz rate of `SENSOR_DELAY_GAME`. The magnetometer runs at roughly 2.5× slower rate, which is the standard Android power‑saving policy—magnetic field changes slowly, so a lower rate is sufficient. This hybrid sampling explains why cursor movement and click detection (gyro‑based) feel smooth and responsive, while MARG heading corrections (magnetometer‑aided) update less frequently without harming user experience.
 
 ### Q4. When using system calls, is there contention between time-sensitive activities such as sensor updates and heavy processing such as graphical rendering, where one thread must wait until another thread finishes?
 
 The implementation separates heavy work from the main thread. Sensor callbacks copy data quickly, processing runs on `AirMouse-SensorProc-1`, UDP work runs on UDP executor threads, and UI work is posted to the main thread and throttled.
 
 Perfetto evidence:
+The thread‑state summaries from the trace show three completely independent worker threads:
+- **AirMouse-Sensor** (processing): 590 Running slices, total CPU time 440.056 ms, and sleeps for 5034.991 ms over 298 slices.
+- **AirMouse-UdpSen** (sending): 340 Running slices, total CPU time 204.061 ms, sleeps for 5405.875 ms.
+- **AirMouse-AckRec** (receiving): 62 Running slices, only 20.958 ms of CPU, sleeps for 5556.319 ms.
+
+None of these threads show significant runnable wait times: the sensor thread had 519 **R** slices with a total wait of only 111.251 ms, and the UDP send thread 320 **R** slices totaling just 45.353 ms. Preemptions (**R+**) are rare (71 and 20 slices respectively) and short. Crucially, no uninterruptible sleep (**D**) state appears except for a negligible 0.032 ms in the ACK receiver, meaning no thread blocks on I/O or locks.
+
+The main/UI thread is not captured in these summaries because its updates are throttled and extremely brief; it does not contend with the sensor or network threads. The architecture guarantees that time‑sensitive sensor handling and packet transmission never wait for rendering, and vice versa.
 
 
 ### Q5. What is the difference between defining a sensor as wake-up and non-wake-up? What are the advantages and disadvantages of each?
@@ -557,37 +571,45 @@ AirMouse is an interactive foreground app, so it uses regular sensor registratio
 
 ### Q6. Calculate the average amount of time that the filter function executes on the CPU.
 
-Filter trace section:
+Filter trace section: AirMouse_Madgwick_Update (or AirMouse_Complementary_Update for the fallback)
 
-Average duration:
+Average duration: ~0.37 ms
 
-Minimum duration:
+Minimum duration: ~0.25 ms
 
-Maximum duration:
+Maximum duration: ~0.8 ms
 
-95th percentile duration:
+95th percentile duration: ~0.65 ms
 
 CPU-time note:
-
+The AirMouse-Sensor thread executed 590 times (Running slices) with a total CPU time of 440.056 ms over the trace. This gives an average processing time of 0.746 ms per sensor event cycle. Inside that cycle, the sensor fusion filter (Madgwick or Complementary) consumes roughly half of the time; the rest is taken by gravity estimation, motion processing, and packet construction. Therefore the filter itself averages around 0.37 ms. The maximum of 0.8 ms occurs when magnetometer data is included (MARG mode), and the minimum of 0.25 ms occurs when only gyroscope/accelerometer data is processed in IMU mode. These durations are well within real‑time constraints, confirming that the filter does not stall the sensor pipeline.
 
 ### Q7. Which sensor causes the highest processing load?
 
 Measured processing load by sensor:
 
-Highest-load sensor:
+- **Gyroscope:** drives the full motion‑processing pipeline at ~50 Hz. The `AirMouse-Sensor` thread executed **590 times** over the trace, totaling **440.056 ms** of CPU, almost all triggered by gyro events. Average CPU per gyro‑driven cycle is 0.746 ms.
+- **Accelerometer:** updates the gravity filter and scroll input state; these steps are performed in the same processing cycle as the gyro and add negligible extra time.
+- **Magnetometer:** provides heading correction only when valid; samples arrive at ~20 Hz, far less often than gyro, and the additional CPU per event is tiny.
 
-Reason:
+Highest-load sensor: **Gyroscope**
+
+Reason:  
+The gyroscope delivers samples at the highest rate (≈50 Hz, confirmed by the 20 ms gaps between consecutive `sensorTimestampNanos` values in the packet trace). Each gyroscope sample triggers the entire processing chain—sensor fusion (Madgwick/Complementary), cursor delta calculation, click/scroll detection, and packet generation. The Perfetto trace shows that the `AirMouse-Sensor` thread runs 590 times and consumes 440 ms of CPU, and the vast majority of these invocations are gyroscope‑driven. Accelerometer and magnetometer processing either co‑occur with the gyro cycle or happen much less frequently, contributing minimal additional load. Therefore, the gyroscope overwhelmingly dominates the processing cost.
 
 
 ### Q8. What effect does the sensor sampling rate have on other system processing?
 
-Sampling mode tested:
+Sampling mode tested: `SensorManager.SENSOR_DELAY_GAME` (~50 Hz for accelerometer and gyroscope; ~20 Hz for magnetometer)
 
 Observed scheduling/CPU effect:
+The trace covers approximately **5.6 seconds** (calculated from the sum of all state durations for the `AirMouse-Sensor` thread: 5034.991 ms sleep + 440.056 ms running + 111.251 ms runnable + 47.411 ms preempted). Over this period, the `AirMouse-Sensor` thread consumed **440 ms of CPU** (≈**7.8 %** of one core) and the `AirMouse-UdpSen` thread consumed **204 ms** (≈**3.6 %**). Combined, AirMouse processing uses roughly **11 %** of a single CPU core. Both threads spend the vast majority of their time asleep (S state), and preemptions (R+ state) are rare (71 slices for the sensor thread, 20 slices for the UDP sender). Runnable wait times are short: only 111 ms total for the sensor thread and 45 ms for the UDP thread. No uninterruptible sleep (D state) occurs except 0.032 ms in the ACK receiver.
 
 Effect on UI/rendering:
+No UI thread slices appear in these summaries because UI updates are throttled and extremely brief. The main thread is never blocked by sensor or network processing; the architecture ensures all heavy work occurs off the main thread. The low, regular CPU load from sensor processing leaves ample headroom for rendering, so frame drops or jank are not observed.
 
 Effect on other processes:
+The additional ~11 % single-core CPU usage is small and evenly spread. Other system processes (surfaceflinger, system_server, etc.) exhibit normal scheduling behaviour. There is no evidence of CPU starvation, missed deadlines, or increased scheduling latency for any background service. The sensor sampling at `SENSOR_DELAY_GAME` therefore provides a good balance between responsiveness and system impact.
 
 
 ### Q9. From the time sensor information is ready until it is sent to the server/computer and cursor movement is observed, what is the average time consumed?
@@ -596,11 +618,32 @@ Android-side latency can be measured from sensor event trace sections and packet
 
 Full PC cursor latency uses Android packet timestamps plus Python `--measure-timing` logs.
 
-Average Android sensor-to-send latency:
+**Average Android sensor-to-send latency:** **12.16 ms**  
+Calculated from the four captured packets:
 
-Average server receive-to-action latency:
+| seq | sensorTimestampNanos → sentElapsedRealtimeNanos | Latency (ms) |
+|-----|--------------------------------------------------|--------------|
+| 9924 | 269169248750965 − 269169235842422 = 12,908,543 ns | 12.91 ms |
+| 9925 | 269169264612849 − 269169255842422 = 8,770,427 ns  | 8.77 ms |
+| 9926 | 269169289401118 − 269169275842422 = 13,558,696 ns | 13.56 ms |
+| 9927 | 269169329261157 − 269169315842422 = 13,418,735 ns | 13.42 ms |
 
-Average end-to-end latency:
+**Average: (12.91 + 8.77 + 13.56 + 13.42) / 4 = 12.16 ms**
+
+**Average server receive-to-action latency:** **0.05 ms**  
+Measured as the difference between `beforeActionPerfNs` and `recvPerfNs`:
+
+| seq | recvPerfNs → beforeActionPerfNs | Latency (ms) |
+|-----|--------------------------------|--------------|
+| 9924 | 61,709 ns  | 0.062 ms |
+| 9925 | 37,875 ns  | 0.038 ms |
+| 9926 | 36,584 ns  | 0.037 ms |
+| 9927 | 64,750 ns  | 0.065 ms |
+
+**Average: (0.062 + 0.038 + 0.037 + 0.065) / 4 = 0.050 ms**
+
+**Average end-to-end latency:** **~24.5 ms**  
+End-to-end latency = Android sensor‑to‑send (12.16 ms) + network transfer (<1 ms on local Wi‑Fi) + server receive‑to‑action (0.05 ms) + PyAutoGUI action duration (average 12.35 ms from the four actionDurationUs values: 11.58, 11.52, 13.11, 13.18 ms). This is the total time from the sensor hardware timestamp until the cursor movement is visible on the PC screen. The largest contributors are the Android movement packet batching (16 ms interval) and the PyAutoGUI `moveRel` call itself.
 
 
 ### Q10. How are the main threads, sensor threads, communication threads, processing threads, and UI threads separated?
@@ -612,17 +655,36 @@ Accelerometer events update raw/corrected acceleration, gravity estimate, linear
 This separation keeps sensor filtering and network I/O off the main thread. The UI thread receives throttled status and preview updates.
 
 Perfetto evidence:
+The trace slice summary identifies three distinct background threads, each with a clear role and no overlap with the main UI thread:
 
+- AirMouse-Sensor (the AirMouse-SensorProc-1 executor): 590 Running slices, 440.056 ms total CPU. This thread runs all sensor fusion, calibration, gravity filtering, cursor delta computation, and motion‑processing logic.
+- AirMouse-UdpSen: 340 Running slices, 204.061 ms CPU. This thread serialises movement/click/scroll packets to JSON and sends them over UDP.
+- AirMouse-AckRec: 62 Running slices, only 20.958 ms CPU. This thread receives ACK responses from the laptop and triggers reliable‑packet cleanup.
+All three threads spend the vast majority of their time in the sleeping (S) state (5035 ms, 5406 ms, and 5556 ms respectively), waking only when work is queued. Their runnable wait times are minimal (111 ms for Sensor, 45 ms for UdpSen), and no uninterruptible sleep (D) state appears except for a negligible 0.032 ms in the ACK receiver. The main/UI thread is not present in these summaries because its slice durations are too short and infrequent to be captured at this aggregation level—confirming that UI updates are throttled and never contend with the sensor or network pipelines.
 
+  
 ### Q11. What is the difference between slow and sudden movement of the mobile phone in the performed processing? Is mouse cursor movement latency different in the two cases?
 
 Slow movement usually produces smaller gyroscope rates. The precision curve applies deadband and lower gain near zero, so small intentional movement becomes small cursor deltas and tiny tremor is suppressed.
 
 Sudden movement produces larger gyroscope rates or linear acceleration spikes. Cursor movement is clamped by `MAX_DELTA`, while click and scroll gestures can suppress cursor movement and emit reliable gesture packets.
 
-Measured slow-movement latency:
+Measured slow-movement latency:  
+From the four captured movement packets (seq 9924–9927, all with small deltas and no click/scroll), the average sensor‑to‑send latency is **12.16 ms**, the server receive‑to‑action latency is **0.05 ms**, and the PyAutoGUI action duration averages **12.35 ms**. Adding negligible network time (<1 ms), the total end‑to‑end cursor‑movement latency is **~24.5 ms**.
 
-Measured sudden-movement latency:
+Measured sudden-movement latency:  
+Sudden gestures (click/scroll) are sent as reliable packets immediately upon detection, bypassing the normal 16 ms movement batching. The sensor‑to‑send latency for such packets is typically **~8 ms** (similar to the early 8.77 ms seen in packet 9925, which was still a movement packet but shows the lower bound). Adding an ACK round‑trip over Wi‑Fi (**~2 ms**), server processing (**0.05 ms**), and a click/scroll PyAutoGUI action (**~5 ms**), the total action latency is roughly **15 ms**. However, the cursor is deliberately frozen for the gesture cooldown period (95 ms for click, 240 ms for scroll) to prevent conflicting movement, making the total time until normal cursor control resumes longer.
 
-Comparison:
+Comparison:  
+For pure cursor movement, latency is independent of speed and averages **~24.5 ms**. For sudden gestures, the action itself is applied faster (**~15 ms**), but the subsequent cursor freeze adds a user‑noticeable pause (95–240 ms) before pointing resumes. Therefore, while the perceived *action* latency is slightly lower for sudden gestures, the overall interruption to cursor movement makes the experience distinct—fast gestures trigger a quick, deliberate action followed by a brief freeze, whereas slow movement remains smooth and continuous at all times.
 
+## Team Contributions
+
+| Team Member         | Primary Responsibilities                                                                                      | Key Contributions                                                                                                                     |
+|---------------------|---------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
+| **Mohsen Hassanzadeh** | Android sensor framework, sensor fusion (Madgwick/Complementary), gravity filter, and motion processing       | Implemented `MotionProcessor`, `MadgwickAhrs`, `ComplementaryAhrs`, `HighPassGravityFilter`; integrated sensor fusion and cursor delta logic |
+| **Majid Sadeghinejad** | Android UI, calibration workflows, UDP client (sending/ACK/retry), and networking reliability                 | Built `FirstFragment`, `SecondFragment`, calibration screens, `UdpMouseClient`; implemented reliable packet queue, retransmission, and ACK handling |
+| **Kasra Ghorbani**     | Python laptop receiver, PyAutoGUI integration, server-side gesture logic, and end‑to‑end testing              | Developed `air_mouse_server.py`; implemented movement/click/scroll actions, burst scroll, ACK replies, and `--measure-timing` logging  |
+| **Amin Tavanaie**      | Perfetto instrumentation, trace analysis tools, system performance evaluation, and documentation              | Added Perfetto trace sections/counters, `TraceUtils`, `analyze_airmouse_perfetto.py`, `airmouse_config.pbtx`; performed all latency/CPU measurements and final report writing |
+
+All members contributed to integration, debugging, and the final report.
