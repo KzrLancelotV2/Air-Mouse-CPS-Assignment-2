@@ -56,6 +56,9 @@ class MotionProcessor(
     private var lastScrollAccelNanos = 0L
     private var scrollPeakSignedY = 0f
     private var scrollImpulseSignedY = 0f
+    private var scrollCandidateDirection = 0
+    private var scrollCandidateStartedNanos = 0L
+    private var scrollNeutralSinceNanos = 0L
     private var activeGestureSettle = ActiveGestureSettle.NONE
     private var gestureSettleMaxUntilNanos = 0L
     private var gestureStableSinceNanos = 0L
@@ -72,7 +75,7 @@ class MotionProcessor(
     private val complementary = ComplementaryAhrs()
     private val gravityFilter = HighPassGravityFilter(0.08f)
     private val gyroSmoothing = LowPassFilter3D(GYRO_SMOOTHING_ALPHA)
-    private val linearAccelSmoothing = LowPassFilter3D(0.35f)
+    private val linearAccelSmoothing = LowPassFilter3D(LINEAR_ACCEL_SMOOTHING_ALPHA)
 
     private var lastCalibrationStatus = "Calibration: waiting"
     private var lastMovementDebug = "Movement: waiting for gyro"
@@ -96,6 +99,9 @@ class MotionProcessor(
         lastScrollAccelNanos = 0L
         scrollPeakSignedY = 0f
         scrollImpulseSignedY = 0f
+        scrollCandidateDirection = 0
+        scrollCandidateStartedNanos = 0L
+        scrollNeutralSinceNanos = 0L
         activeGestureSettle = ActiveGestureSettle.NONE
         gestureSettleMaxUntilNanos = 0L
         gestureStableSinceNanos = 0L
@@ -202,6 +208,11 @@ class MotionProcessor(
         scrollPeakSignedY = 0f
         scrollImpulseSignedY = 0f
         lastScrollAccelNanos = 0L
+    }
+
+    private fun clearScrollCandidate() {
+        scrollCandidateDirection = 0
+        scrollCandidateStartedNanos = 0L
     }
 
     private fun computeMovement(
@@ -407,6 +418,8 @@ class MotionProcessor(
         if (kind == ActiveGestureSettle.SCROLL) {
             clearScrollWindow()
             scrollArmed = false
+            clearScrollCandidate()
+            scrollNeutralSinceNanos = 0L
         }
         return GestureState(null, true, "${kind.name.lowercase(Locale.US)} settle release", "${kind.name.lowercase(Locale.US)}SettleRelease")
     }
@@ -499,24 +512,44 @@ class MotionProcessor(
         val scrollMagnitude = abs(scrollSignal)
         val scrollPeakMagnitude = abs(scrollPeakSignedY)
         val scrollImpulseMagnitude = abs(scrollImpulseSignedY)
-        val scrollCandidate = scrollArmed &&
-                yAccelDominant &&
-                (exceedsDirectionalThreshold(scrollSignal, SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD, SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD) ||
-                        exceedsDirectionalThreshold(scrollPeakSignedY, SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD, SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD) ||
-                        exceedsDirectionalThreshold(scrollImpulseSignedY, SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD, SCROLL_DOWN_CANDIDATE_IMPULSE_THRESHOLD))
-        val scrollTrigger = scrollArmed &&
-                yAccelDominant &&
+        val candidateDirection = scrollCandidateDirection(
+            scrollSignal,
+            scrollPeakSignedY,
+            scrollImpulseSignedY,
+            SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD,
+            SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD,
+            SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD,
+            SCROLL_DOWN_CANDIDATE_IMPULSE_THRESHOLD
+        )
+        if (scrollArmed && yAccelDominant && scrollCandidateDirection == 0 && candidateDirection != 0) {
+            scrollCandidateDirection = candidateDirection
+            scrollCandidateStartedNanos = nowNanos
+        }
+        val candidateTimedOut = scrollCandidateDirection != 0 &&
+                nowNanos - scrollCandidateStartedNanos > SCROLL_CANDIDATE_TIMEOUT_NANOS
+        val sameDirectionTrigger = scrollCandidateDirection != 0 &&
+                hasScrollTriggerForDirection(scrollCandidateDirection, scrollSignal)
+        val scrollCandidate = scrollArmed && yAccelDominant && scrollCandidateDirection != 0
+        val scrollTrigger = scrollCandidate &&
                 !heavyRotation &&
-                (exceedsDirectionalThreshold(scrollSignal, SCROLL_UP_ACCEL_THRESHOLD, SCROLL_DOWN_ACCEL_THRESHOLD) ||
-                        exceedsDirectionalThreshold(scrollPeakSignedY, SCROLL_UP_PEAK_THRESHOLD, SCROLL_DOWN_PEAK_THRESHOLD) ||
-                        exceedsDirectionalThreshold(scrollImpulseSignedY, SCROLL_UP_IMPULSE_THRESHOLD, SCROLL_DOWN_IMPULSE_THRESHOLD))
+                sameDirectionTrigger
         val scrollFreezeRemainingMs = remainingMs(scrollFreezeUntilNanos, nowNanos)
 
-        if (scrollMagnitude < SCROLL_REARM_ACCEL_THRESHOLD &&
-            scrollPeakMagnitude < SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD &&
-            scrollImpulseMagnitude < SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD
-        ) {
-            scrollArmed = true
+        val neutralNow = scrollMagnitude < SCROLL_REARM_ACCEL_THRESHOLD &&
+                scrollPeakMagnitude < SCROLL_REARM_PEAK_THRESHOLD &&
+                scrollImpulseMagnitude < SCROLL_REARM_IMPULSE_THRESHOLD
+        if (neutralNow) {
+            if (scrollNeutralSinceNanos <= 0L) scrollNeutralSinceNanos = nowNanos
+            if (nowNanos - scrollNeutralSinceNanos >= SCROLL_REARM_STABLE_NANOS) {
+                scrollArmed = true
+                clearScrollCandidate()
+            }
+        } else {
+            scrollNeutralSinceNanos = 0L
+        }
+
+        if (candidateTimedOut && !sameDirectionTrigger) {
+            clearScrollCandidate()
         }
 
         if (scrollFreezeRemainingMs > 0f) {
@@ -546,7 +579,9 @@ class MotionProcessor(
             )
             scrollArmed = false
             clearScrollWindow()
-            val gesture = if (strongestScrollSignal(scrollSignal) > 0f) GestureKind.SCROLL_UP else GestureKind.SCROLL_DOWN
+            val gesture = if (scrollCandidateDirection > 0) GestureKind.SCROLL_UP else GestureKind.SCROLL_DOWN
+            clearScrollCandidate()
+            scrollNeutralSinceNanos = 0L
             lastGestureDebug = gestureDebug(
                 mode = "scrollFreeze",
                 clickSignValue = clickSignValue,
@@ -597,21 +632,65 @@ class MotionProcessor(
         return GestureState(null, false, "none", "cursor")
     }
 
-    private fun strongestScrollSignal(currentSignal: Float): Float {
-        val peak = scrollPeakSignedY
-        val impulse = scrollImpulseSignedY / SCROLL_IMPULSE_DIRECTION_NORMALIZER
-        return listOf(currentSignal, peak, impulse).maxByOrNull { abs(it) } ?: currentSignal
+    private fun scrollCandidateDirection(
+        currentSignal: Float,
+        peakSignal: Float,
+        impulseSignal: Float,
+        upAccelThreshold: Float,
+        downAccelThreshold: Float,
+        upImpulseThreshold: Float,
+        downImpulseThreshold: Float
+    ): Int {
+        val candidates = listOf(
+            thresholdDirection(currentSignal, upAccelThreshold, downAccelThreshold) to abs(currentSignal),
+            thresholdDirection(peakSignal, upAccelThreshold, downAccelThreshold) to abs(peakSignal),
+            thresholdDirection(impulseSignal, upImpulseThreshold, downImpulseThreshold) to
+                    abs(impulseSignal / SCROLL_IMPULSE_DIRECTION_NORMALIZER)
+        ).filter { it.first != 0 }
+        return candidates.maxByOrNull { it.second }?.first ?: 0
     }
 
-    private fun exceedsDirectionalThreshold(
+    private fun thresholdDirection(
         signedValue: Float,
         upThreshold: Float,
         downThreshold: Float
+    ): Int {
+        return when {
+            signedValue > upThreshold -> 1
+            signedValue < -downThreshold -> -1
+            else -> 0
+        }
+    }
+
+    private fun hasScrollTriggerForDirection(direction: Int, currentSignal: Float): Boolean {
+        return exceedsDirectionalThresholdForDirection(
+            currentSignal,
+            direction,
+            SCROLL_UP_ACCEL_THRESHOLD,
+            SCROLL_DOWN_ACCEL_THRESHOLD
+        ) || exceedsDirectionalThresholdForDirection(
+            scrollPeakSignedY,
+            direction,
+            SCROLL_UP_PEAK_THRESHOLD,
+            SCROLL_DOWN_PEAK_THRESHOLD
+        ) || exceedsDirectionalThresholdForDirection(
+            scrollImpulseSignedY,
+            direction,
+            SCROLL_UP_IMPULSE_THRESHOLD,
+            SCROLL_DOWN_IMPULSE_THRESHOLD
+        )
+    }
+
+    private fun exceedsDirectionalThresholdForDirection(
+        signedValue: Float,
+        direction: Int,
+        upThreshold: Float,
+        downThreshold: Float
     ): Boolean {
-        return if (signedValue >= 0f) {
+        return if (direction > 0) {
             signedValue > upThreshold
         } else {
-            abs(signedValue) > downThreshold
+            signedValue < -downThreshold
         }
     }
 
@@ -645,7 +724,7 @@ class MotionProcessor(
         return String.format(
             Locale.US,
             "Gesture mode=%s cursorFrozenForClick=%s clickCandidate=%s clickY raw %.3f signed %.3f threshold %.2f candidate %.2f allowed=%s clickFreezeRemainingMs %.0f\n" +
-                    "Scroll candidate=%s linearY raw %.3f signed %.3f peakY %.3f impulseY %.3f upThresholds %.2f/%.2f/%.2f downThresholds %.2f/%.2f/%.2f armed=%s allowed=%s dom=%s heavyRotation=%s scrollFreezeRemainingMs %.0f scrollBlockedReason=%s\n%s",
+                    "Scroll candidate=%s linearY raw %.3f signed %.3f peakY %.3f impulseY %.3f upThresholds %.2f/%.2f/%.3f downThresholds %.2f/%.2f/%.3f armed=%s latchedDir=%d neutralMs %.0f allowed=%s dom=%s heavyRotation=%s scrollFreezeRemainingMs %.0f scrollBlockedReason=%s\n%s",
             mode,
             mode.startsWith("click"),
             clickCandidate,
@@ -667,6 +746,8 @@ class MotionProcessor(
             SCROLL_DOWN_PEAK_THRESHOLD,
             SCROLL_DOWN_IMPULSE_THRESHOLD,
             scrollArmed,
+            scrollCandidateDirection,
+            if (scrollNeutralSinceNanos <= 0L) 0f else (System.nanoTime() - scrollNeutralSinceNanos) / 1_000_000f,
             scrollAllowed,
             yAccelDominant,
             heavyRotation,
@@ -786,6 +867,7 @@ class MotionProcessor(
         private const val MAX_DELTA = 12.0f
         private const val GYRO_SMOOTHING_ALPHA = 0.58f
         private const val GYRO_FILTER_DEADBAND = 0.004f
+        private const val LINEAR_ACCEL_SMOOTHING_ALPHA = 0.42f
         private const val MOVEMENT_GYRO_DEADBAND = 0.012f
         private const val PRECISION_ZONE_RAD_PER_SEC = 0.12f
         private const val LOW_SPEED_GAIN = 0.36f
@@ -802,18 +884,22 @@ class MotionProcessor(
         private const val CLICK_CANDIDATE_THRESHOLD_RAD_PER_SEC = 1.25f
         private const val CLICK_FREEZE_NANOS = 95_000_000L
         private const val CLICK_MAX_SETTLE_NANOS = 300_000_000L
-        private const val SCROLL_UP_ACCEL_THRESHOLD = 1.72f
-        private const val SCROLL_UP_PEAK_THRESHOLD = 1.82f
-        private const val SCROLL_UP_IMPULSE_THRESHOLD = 0.105f
-        private const val SCROLL_DOWN_ACCEL_THRESHOLD = 2.05f
-        private const val SCROLL_DOWN_PEAK_THRESHOLD = 2.15f
-        private const val SCROLL_DOWN_IMPULSE_THRESHOLD = 0.13f
-        private const val SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD = 0.85f
-        private const val SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD = 0.05f
-        private const val SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD = 1.15f
-        private const val SCROLL_DOWN_CANDIDATE_IMPULSE_THRESHOLD = 0.07f
-        private const val SCROLL_REARM_ACCEL_THRESHOLD = 0.65f
-        private const val SCROLL_WINDOW_NANOS = 140_000_000L
+        private const val SCROLL_UP_ACCEL_THRESHOLD = 1.42f
+        private const val SCROLL_UP_PEAK_THRESHOLD = 1.50f
+        private const val SCROLL_UP_IMPULSE_THRESHOLD = 0.080f
+        private const val SCROLL_DOWN_ACCEL_THRESHOLD = 1.82f
+        private const val SCROLL_DOWN_PEAK_THRESHOLD = 1.92f
+        private const val SCROLL_DOWN_IMPULSE_THRESHOLD = 0.110f
+        private const val SCROLL_UP_CANDIDATE_ACCEL_THRESHOLD = 0.62f
+        private const val SCROLL_UP_CANDIDATE_IMPULSE_THRESHOLD = 0.035f
+        private const val SCROLL_DOWN_CANDIDATE_ACCEL_THRESHOLD = 0.88f
+        private const val SCROLL_DOWN_CANDIDATE_IMPULSE_THRESHOLD = 0.052f
+        private const val SCROLL_REARM_ACCEL_THRESHOLD = 0.46f
+        private const val SCROLL_REARM_PEAK_THRESHOLD = 0.58f
+        private const val SCROLL_REARM_IMPULSE_THRESHOLD = 0.030f
+        private const val SCROLL_REARM_STABLE_NANOS = 120_000_000L
+        private const val SCROLL_CANDIDATE_TIMEOUT_NANOS = 360_000_000L
+        private const val SCROLL_WINDOW_NANOS = 170_000_000L
         private const val SCROLL_FREEZE_NANOS = 240_000_000L
         private const val SCROLL_MAX_SETTLE_NANOS = 750_000_000L
         private const val SCROLL_HEAVY_ROTATION_SUPPRESSION_THRESHOLD = 3.2f
