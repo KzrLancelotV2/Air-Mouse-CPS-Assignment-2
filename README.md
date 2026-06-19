@@ -153,6 +153,132 @@ corrected = (raw - offset) / scale
 
 If a range is too small, the magnetometer calibration is rejected and the raw value is used safely.
 
+## Sensor Calibration and Gesture Instructions
+
+### English Version
+
+#### 1. Gyroscope Calibration
+
+For gyroscope calibration:
+
+- Put the phone on a table.
+- Keep it completely still.
+- Do not touch or move the phone.
+- Press `Calibrate`.
+
+That is all.
+
+The gyroscope calibration must be done while the phone is fully stable.
+
+#### 2. Accelerometer Six-Direction Calibration
+
+For accelerometer calibration, capture the phone in six different physical directions.
+
+Use these six positions:
+
+- Phone flat, screen facing up
+- Phone flat, screen facing down
+- Phone standing on its right edge
+- Phone standing on its left edge
+- Phone standing on its top edge
+- Phone standing on its bottom edge
+
+For each position:
+
+- Place the phone in that direction.
+- Wait about 2 seconds until it becomes stable.
+- Press `Save` or `Capture`.
+- Do not move the phone while the sample is being recorded.
+
+If the calibration becomes invalid, it is usually because:
+
+- the phone moved during sampling
+- the six directions were not actually different
+- the same direction was captured twice
+- the phone was held by hand and hand vibration affected the sample
+
+#### 3. Magnetometer Figure-8 Calibration
+
+For magnetometer calibration, use the figure-8 movement.
+
+Steps:
+
+- Press `Start Magnetometer Figure-8 Capture`.
+- Hold the phone in your hand, not on the table.
+- Move the phone in the air as if you are drawing a large 8 shape.
+- While moving it, slowly rotate your wrist so the phone faces different angles.
+- Continue the movement for about 10 to 20 seconds.
+- Press the magnetometer button again to stop the capture.
+
+Think of it like this:
+
+Draw a big 8 in the air while slowly twisting the phone around.
+
+Do not only move the phone flat in one direction. The phone must face different angles during the movement, such as:
+
+- screen facing up
+- screen facing slightly down
+- left edge tilted up
+- right edge tilted up
+- top edge tilted
+- bottom edge tilted
+
+The goal is not to draw one perfect 8. The goal is to expose the magnetometer to different orientations so it can record the minimum and maximum values on the X, Y, and Z axes. Then the app uses these values to calculate the magnetometer offset and scale.
+
+#### 4. Mouse Movement Gestures
+
+Hold the phone like a flat tray.
+
+- Screen facing up
+- Top side of the phone pointing toward the monitor
+
+Move Mouse Left and Right
+
+To move the mouse left and right:
+
+Rotate the phone slightly like a steering wheel.
+
+That means rotating it clockwise or counterclockwise while keeping it mostly flat in your hand.
+
+Move Mouse Up and Down
+
+To move the mouse up and down:
+
+Tilt the top side of the phone slightly up or down.
+
+It is like pointing the top of the phone a little higher or lower toward the monitor.
+
+Click Gesture
+
+For click:
+
+- Do not push the phone forward or backward.
+- Instead, quickly twist the phone for a moment, like turning a door handle.
+
+That means:
+
+- the left edge goes up and the right edge goes down
+
+or
+
+- the right edge goes up and the left edge goes down
+
+This quick twisting motion is detected as a click.
+
+Scroll Gesture
+
+For scroll:
+
+- Do not twist the phone.
+- Move the whole phone quickly along its own length.
+
+If the top side of the phone is pointing toward the monitor:
+
+- quickly push the phone toward the monitor
+- or quickly pull the phone back toward yourself
+
+This forward/backward movement is detected as scroll.
+
 ## Filtering and Movement
 
 The default filter mode is Madgwick. The filter maintains a quaternion initialized as:
